@@ -4,11 +4,11 @@ import numpy as np
 from scipy.optimize import minimize
 
 
-E = Spectrum_1D([1, 2, 3], [10, 20, 30])
+E = Spectrum_1D([1, 100], [10, 30])
 
-T1 = Spectrum_1D([1, 2], [2, 2])
+T1 = Spectrum_1D([1], [2])    # optimal proportion: 5
 
-T2 = Spectrum_1D([2, 3], [1, 3])
+T2 = Spectrum_1D([100], [3])  # optimal proportion: 10
 
 solver = DeconvSolver(
     empirical_spectrum=E,
@@ -33,11 +33,10 @@ def cost_and_grad(point):
 
 result = minimize(
     cost_and_grad,
-    x0=[10.0, 30.0],
+    x0=[1.0, 1.0],
     jac=True,
     method="L-BFGS-B",
     bounds=[(0, 100), (0, 100)],
-    options={"maxiter": 10000},
 )
 
 print(f"Optimal point: {result.x}")
