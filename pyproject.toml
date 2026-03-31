@@ -27,6 +27,9 @@ classifiers = [
 extras = ["pyopenms"]
 pytest = ["pytest", "pandas", "numpy"]
 
+[tool.pytest.ini_options]
+testpaths = ["pytest"]
+
 [tool.scikit-build.sdist]
 exclude = ["**/*"]
 include = [
