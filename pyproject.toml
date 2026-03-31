@@ -1,0 +1,43 @@
+[build-system]
+requires = ["scikit-build-core", "nanobind", "pylmcf", "wnet"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "wnetdeconv"
+version = "0.0.1"
+description = "Python implementation of spectral deconvolution using Wasserstein metric"
+dependencies = ["pylmcf", "wnet", "numpy"]
+authors = [{ name="Michał Startek", email="michal.startek@mimuw.edu.pl" }]
+maintainers = [{ name="Michał Startek", email="michal.startek@mimuw.edu.pl" }]
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENCE"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Development Status :: 4 - Beta",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/michalsta/wnetdeconv"
+"Repository" = "https://github.com/michalsta/wnetdeconv.git"
+
+[project.optional-dependencies]
+extras = ["pyopenms"]
+pytest = ["pytest", "pandas", "numpy"]
+
+[tool.scikit-build.sdist]
+exclude = ["**/*"]
+include = [
+    "/src/**/*.py",
+    "/src/**/*.c",
+    "/src/**/*.hpp",
+    "/src/**/*.h",
+    "/src/**/*.cpp",
+    "/src/**/*.cc",
+    "/LICENCE",
+    "/README.md",
+    "/pyproject.toml",
+    "/CMakeLists.txt"
+]
