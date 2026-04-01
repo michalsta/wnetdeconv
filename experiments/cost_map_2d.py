@@ -53,7 +53,7 @@ def compute_cost_grid(solver, p1_range, p2_range, n_points):
     return P1, P2, C, p1, p2, Grad_p1_analytical, Grad_p2_analytical
 
 
-def run_optimization(solver, start_point, bounds):
+def run_optimization(solver, start_point, bounds, use_numerical_grad=False):
     """Run gradient descent optimization and return trajectory."""
     trajectory = []
 
@@ -67,14 +67,26 @@ def run_optimization(solver, start_point, bounds):
         solver.set_point(point)
         return np.array(solver.gradient())
 
-    result = minimize(
-        cost_function,
-        start_point,
-        method='L-BFGS-B',
-        jac=grad_function,
-        bounds=bounds,
-        options={'disp': False, 'maxiter': 100}
-    )
+    if use_numerical_grad:
+        # Use numerical gradients (automatic finite differences)
+        # Use a larger epsilon for finite differences since cost function is discrete
+        result = minimize(
+            cost_function,
+            start_point,
+            method='L-BFGS-B',
+            bounds=bounds,
+            options={'disp': False, 'maxiter': 100, 'eps': 1e-2}
+        )
+    else:
+        # Use analytical gradients
+        result = minimize(
+            cost_function,
+            start_point,
+            method='L-BFGS-B',
+            jac=grad_function,
+            bounds=bounds,
+            options={'disp': False, 'maxiter': 100}
+        )
 
     return result, np.array(trajectory)
 
@@ -188,8 +200,9 @@ def plot_single_map(ax, P1, P2, data, trajectory, scipy_result, global_result, g
     ax.legend(loc='best', fontsize=6)
 
 
-def plot_zoom_row(axes, data_dict, trajectory, scipy_result, global_result, grid_optimum, zoom_label, precision=2):
-    """Plot one row showing: cost, numerical gradient, analytical gradient, difference."""
+def plot_zoom_row(axes, data_dict, trajectory_num, trajectory_ana, scipy_result_num, scipy_result_ana,
+                  global_result, grid_optimum, zoom_label, precision=2):
+    """Plot one row showing: cost+numeric grad walk, numeric gradient, cost+analytic grad walk, analytic gradient, difference."""
     P1 = data_dict['P1']
     P2 = data_dict['P2']
     C = data_dict['C']
@@ -208,55 +221,70 @@ def plot_zoom_row(axes, data_dict, trajectory, scipy_result, global_result, grid
     all_grad_data = np.concatenate([grad_norm_num.flatten(), grad_norm_ana.flatten()])
     gmin, gmax = np.percentile(all_grad_data, [5, 95])
 
-    # Column 1: Cost landscape
-    plot_single_map(axes[0], P1, P2, C, trajectory, scipy_result, global_result, grid_optimum,
-                    f"Cost ({zoom_label})", "viridis", "cost",
+    # Column 1: Cost landscape with numerical gradient walk
+    plot_single_map(axes[0], P1, P2, C, trajectory_num, scipy_result_num, global_result, grid_optimum,
+                    f"Cost + Num Walk ({zoom_label})", "viridis", "cost",
                     bounds, precision)
 
-    # Column 2: Numerical gradient with arrows
+    # Column 2: Numerical gradient with arrows and numerical walk
     vmin, vmax = np.percentile(grad_norm_num, [5, 95])
     pcm = axes[1].pcolormesh(P1, P2, grad_norm_num, shading="auto", cmap="plasma", vmin=gmin, vmax=gmax)
     plt.colorbar(pcm, ax=axes[1], label="grad mag")
 
-    # Add gradient arrows
+    # Add gradient arrows (normalized to same length)
     step = max(1, len(P1) // 20)
+    # Normalize gradients to unit vectors
+    grad_mag = np.sqrt(grad_p1_num[::step, ::step]**2 + grad_p2_num[::step, ::step]**2)
+    grad_mag = np.where(grad_mag == 0, 1, grad_mag)  # Avoid division by zero
+    grad_p1_norm = grad_p1_num[::step, ::step] / grad_mag
+    grad_p2_norm = grad_p2_num[::step, ::step] / grad_mag
     axes[1].quiver(P1[::step, ::step], P2[::step, ::step],
-                   grad_p1_num[::step, ::step], grad_p2_num[::step, ::step],
+                   grad_p1_norm, grad_p2_norm,
                    alpha=0.6, color='black')
 
-    plot_trajectory(axes[1], trajectory, bounds)
-    add_optima_markers(axes[1], scipy_result, global_result, grid_optimum, precision)
+    plot_trajectory(axes[1], trajectory_num, bounds)
+    add_optima_markers(axes[1], scipy_result_num, global_result, grid_optimum, precision)
     if bounds:
         axes[1].set_xlim(bounds[0], bounds[1])
         axes[1].set_ylim(bounds[2], bounds[3])
     axes[1].set_xlabel("p1")
     axes[1].set_ylabel("p2")
-    axes[1].set_title(f"Gradient - Numerical ({zoom_label})", fontsize=9)
+    axes[1].set_title(f"Grad Num + Num Walk ({zoom_label})", fontsize=9)
     axes[1].set_aspect('equal')
     axes[1].legend(loc='best', fontsize=6)
 
-    # Column 3: Analytical gradient with arrows
-    pcm = axes[2].pcolormesh(P1, P2, grad_norm_ana, shading="auto", cmap="plasma", vmin=gmin, vmax=gmax)
-    plt.colorbar(pcm, ax=axes[2], label="grad mag")
+    # Column 3: Cost landscape with analytical gradient walk
+    plot_single_map(axes[2], P1, P2, C, trajectory_ana, scipy_result_ana, global_result, grid_optimum,
+                    f"Cost + Ana Walk ({zoom_label})", "viridis", "cost",
+                    bounds, precision)
 
-    # Add gradient arrows
-    axes[2].quiver(P1[::step, ::step], P2[::step, ::step],
-                   grad_p1_ana[::step, ::step], grad_p2_ana[::step, ::step],
+    # Column 4: Analytical gradient with arrows and analytical walk
+    pcm = axes[3].pcolormesh(P1, P2, grad_norm_ana, shading="auto", cmap="plasma", vmin=gmin, vmax=gmax)
+    plt.colorbar(pcm, ax=axes[3], label="grad mag")
+
+    # Add gradient arrows (normalized to same length)
+    # Normalize gradients to unit vectors
+    grad_mag_ana = np.sqrt(grad_p1_ana[::step, ::step]**2 + grad_p2_ana[::step, ::step]**2)
+    grad_mag_ana = np.where(grad_mag_ana == 0, 1, grad_mag_ana)  # Avoid division by zero
+    grad_p1_ana_norm = grad_p1_ana[::step, ::step] / grad_mag_ana
+    grad_p2_ana_norm = grad_p2_ana[::step, ::step] / grad_mag_ana
+    axes[3].quiver(P1[::step, ::step], P2[::step, ::step],
+                   grad_p1_ana_norm, grad_p2_ana_norm,
                    alpha=0.6, color='black')
 
-    plot_trajectory(axes[2], trajectory, bounds)
-    add_optima_markers(axes[2], scipy_result, global_result, grid_optimum, precision)
+    plot_trajectory(axes[3], trajectory_ana, bounds)
+    add_optima_markers(axes[3], scipy_result_ana, global_result, grid_optimum, precision)
     if bounds:
-        axes[2].set_xlim(bounds[0], bounds[1])
-        axes[2].set_ylim(bounds[2], bounds[3])
-    axes[2].set_xlabel("p1")
-    axes[2].set_ylabel("p2")
-    axes[2].set_title(f"Gradient - Analytical ({zoom_label})", fontsize=9)
-    axes[2].set_aspect('equal')
-    axes[2].legend(loc='best', fontsize=6)
+        axes[3].set_xlim(bounds[0], bounds[1])
+        axes[3].set_ylim(bounds[2], bounds[3])
+    axes[3].set_xlabel("p1")
+    axes[3].set_ylabel("p2")
+    axes[3].set_title(f"Grad Ana + Ana Walk ({zoom_label})", fontsize=9)
+    axes[3].set_aspect('equal')
+    axes[3].legend(loc='best', fontsize=6)
 
-    # Column 4: Difference
-    plot_single_map(axes[3], P1, P2, grad_diff, trajectory, scipy_result, global_result, grid_optimum,
+    # Column 5: Difference
+    plot_single_map(axes[4], P1, P2, grad_diff, trajectory_ana, scipy_result_ana, global_result, grid_optimum,
                     f"Difference ({zoom_label})", "hot", "diff",
                     bounds, precision)
 
@@ -283,15 +311,23 @@ def main():
     min_idx = np.unravel_index(np.argmin(C), C.shape)
     grid_results = [(P1[min_idx], P2[min_idx], C[min_idx])]
 
-    # Run optimization
-    print("\nRunning gradient descent from starting point: p1=15.00, p2=20.00")
+    # Run optimization with numerical gradients
+    print("\nRunning gradient descent with NUMERICAL gradients from starting point: p1=15.00, p2=20.00")
     start_point = np.array([15.0, 20.0])
     bounds = [(0, 25), (0, 25)]
-    result, trajectory = run_optimization(solver, start_point, bounds)
+    result_num, trajectory_num = run_optimization(solver, start_point, bounds, use_numerical_grad=True)
 
-    print(f"Optimization converged: {result.success}")
-    print(f"Final point: p1={result.x[0]:.2f}, p2={result.x[1]:.2f}, cost={result.fun:.2f}")
-    print(f"Number of iterations: {len(trajectory)}")
+    print(f"Numerical optimization converged: {result_num.success}")
+    print(f"Final point: p1={result_num.x[0]:.2f}, p2={result_num.x[1]:.2f}, cost={result_num.fun:.2f}")
+    print(f"Number of iterations: {len(trajectory_num)}")
+
+    # Run optimization with analytical gradients
+    print("\nRunning gradient descent with ANALYTICAL gradients from starting point: p1=15.00, p2=20.00")
+    result_ana, trajectory_ana = run_optimization(solver, start_point, bounds, use_numerical_grad=False)
+
+    print(f"Analytical optimization converged: {result_ana.success}")
+    print(f"Final point: p1={result_ana.x[0]:.2f}, p2={result_ana.x[1]:.2f}, cost={result_ana.fun:.2f}")
+    print(f"Number of iterations: {len(trajectory_ana)}")
 
     # Find global optimum
     print("\nSearching for actual global optimum with multiple random starts...")
@@ -307,17 +343,37 @@ def main():
     }
 
     # Compute zoom grids
-    zoom_levels = [10, 100, 1000, 10000]
+    zoom_levels = [10, 100, 1000, 10000, 100000]
     zoom_data_list = []
 
     for zoom in zoom_levels:
         print(f"\nComputing {zoom}x zoom with dense grid...")
-        zoom_width_p1 = (p1[-1] - p1[0]) / zoom
-        zoom_width_p2 = (p2[-1] - p2[0]) / zoom
-        p1_min = max(0, result.x[0] - zoom_width_p1/2)
-        p1_max = min(25, result.x[0] + zoom_width_p1/2)
-        p2_min = max(0, result.x[1] - zoom_width_p2/2)
-        p2_max = min(25, result.x[1] + zoom_width_p2/2)
+        zoom_width = (p1[-1] - p1[0]) / zoom  # Use same width for both axes to keep square
+
+        # Center on analytical optimum
+        p1_center = result_ana.x[0]
+        p2_center = result_ana.x[1]
+
+        # Calculate initial bounds
+        p1_min = p1_center - zoom_width/2
+        p1_max = p1_center + zoom_width/2
+        p2_min = p2_center - zoom_width/2
+        p2_max = p2_center + zoom_width/2
+
+        # Shift if hitting boundaries, maintaining width
+        if p1_min < 0:
+            p1_min = 0
+            p1_max = zoom_width
+        elif p1_max > 25:
+            p1_max = 25
+            p1_min = 25 - zoom_width
+
+        if p2_min < 0:
+            p2_min = 0
+            p2_max = zoom_width
+        elif p2_max > 25:
+            p2_max = 25
+            p2_min = 25 - zoom_width
 
         P1_z, P2_z, C_z, p1_z, p2_z, grad_p1_ana_z, grad_p2_ana_z = compute_cost_grid(
             solver, (p1_min, p1_max), (p2_min, p2_max), 200
@@ -340,21 +396,23 @@ def main():
     opt_p1, opt_p2, opt_cost = grid_results[best_grid_idx]
     grid_optimum = (opt_p1, opt_p2, opt_cost)
     print(f"\nGrid optimum from all levels: p1={opt_p1:.3f}, p2={opt_p2:.3f}, cost={opt_cost:.2f}")
-    print(f"  (found at zoom level: {['1x', '10x', '100x', '1000x', '10000x'][best_grid_idx]})")
+    print(f"  (found at zoom level: {['1x', '10x', '100x', '1000x', '10000x', '100000x'][best_grid_idx]})")
 
-    # Create figure with 5 rows x 4 columns
-    fig = plt.figure(figsize=(24, 25))
+    # Create figure with 6 rows x 5 columns
+    fig = plt.figure(figsize=(30, 30))
 
     # Row 1: Full view (1x)
-    axes_row1 = [plt.subplot(5, 4, i+1) for i in range(4)]
-    plot_zoom_row(axes_row1, full_data, trajectory, result, best_result, grid_optimum, "1x", precision=1)
+    axes_row1 = [plt.subplot(6, 5, i+1) for i in range(5)]
+    plot_zoom_row(axes_row1, full_data, trajectory_num, trajectory_ana, result_num, result_ana,
+                  best_result, grid_optimum, "1x", precision=1)
 
-    # Rows 2-5: Zoom levels
+    # Rows 2-6: Zoom levels
     for i, (zoom, data) in enumerate(zip(zoom_levels, zoom_data_list)):
         row = i + 2
-        axes_row = [plt.subplot(5, 4, 4*(row-1) + j + 1) for j in range(4)]
+        axes_row = [plt.subplot(6, 5, 5*(row-1) + j + 1) for j in range(5)]
         precision = 2 if zoom <= 100 else (3 if zoom <= 1000 else (4 if zoom <= 10000 else 5))
-        plot_zoom_row(axes_row, data, trajectory, result, best_result, grid_optimum, f"{zoom}x", precision)
+        plot_zoom_row(axes_row, data, trajectory_num, trajectory_ana, result_num, result_ana,
+                      best_result, grid_optimum, f"{zoom}x", precision)
 
     plt.tight_layout()
     plt.savefig("cost_map_2d.png", dpi=150)
