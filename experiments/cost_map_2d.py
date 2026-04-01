@@ -1,5 +1,6 @@
 """2D map of (p1, p2) -> total_cost for the two-spectrum deconvolution example."""
 import argparse
+import multiprocessing
 import numpy as np
 from wnetdeconv import DeconvSolver
 from wnet.distances import DistanceMetric
@@ -66,6 +67,8 @@ def _build_parser():
                         help='Trash cost for the deconvolution solver')
     parser.add_argument('--scale-factor', type=float, default=1000,
                         help='Scale factor for the deconvolution solver')
+    parser.add_argument('--workers', type=int, default=None, metavar='N',
+                        help='Number of parallel worker processes (default: number of CPUs)')
 
     return parser
 
@@ -319,8 +322,8 @@ if ENABLE_PLOTTING:
             filename = f"cost_map_2d_{method_name}.png"
 
         plt.savefig(filename, dpi=DPI)
-        print(f"  Saved {filename}")
         plt.close(fig)
+        return f"  Saved {filename}"
 
 
 # ============================================================================
@@ -365,6 +368,21 @@ def print_statistics_summary(all_run_stats):
                 costs.append(r['num_final_cost'])
         per_run_best.append(min(costs))
 
+    # Count wins: how many runs each method/variant achieved the per-run best
+    # key: (method_name, 'num'|'ana')
+    win_counts = {(m, v): 0
+                  for m in method_stats
+                  for v in (['ana'] if method_stats[m]['is_gradient_free'] else ['num', 'ana'])}
+    for run_idx, run_stats in enumerate(all_run_stats):
+        best = per_run_best[run_idx]
+        for r in run_stats:
+            mn = r['method']
+            if abs(r['ana_final_cost'] - best) < 1e-9:
+                win_counts[(mn, 'ana')] += 1
+            if not r['is_gradient_free'] and r['num_final_cost'] is not None:
+                if abs(r['num_final_cost'] - best) < 1e-9:
+                    win_counts[(mn, 'num')] += 1
+
     # Print summary for each method
     for method_name, stats in method_stats.items():
         print(f"\n{method_name}:")
@@ -376,11 +394,13 @@ def print_statistics_summary(all_run_stats):
             costs = stats['analytical']['final_cost']
             success_rate = 100 * sum(stats['analytical']['success']) / len(stats['analytical']['success'])
             excess = [c - b for c, b in zip(costs, per_run_best)]
+            wins = win_counts[(method_name, 'ana')]
 
             print(f"  Iterations:  mean={np.mean(iters):.1f}, std={np.std(iters):.1f}, min={np.min(iters)}, max={np.max(iters)}")
             print(f"  Final cost:  mean={np.mean(costs):.2f}, std={np.std(costs):.2f}, min={np.min(costs):.2f}, max={np.max(costs):.2f}")
             print(f"  Excess vs best: mean={np.mean(excess):.2f}, std={np.std(excess):.2f}, min={np.min(excess):.2f}, max={np.max(excess):.2f}")
             print(f"  Success rate: {success_rate:.1f}%")
+            print(f"  Times best: {wins}/{n_runs}")
         else:
             # Gradient-based method - show both numerical and analytical
             print("  NUMERICAL gradients:")
@@ -388,31 +408,41 @@ def print_statistics_summary(all_run_stats):
             num_costs = stats['numerical']['final_cost']
             num_success_rate = 100 * sum(stats['numerical']['success']) / len(stats['numerical']['success'])
             num_excess = [c - b for c, b in zip(num_costs, per_run_best)]
+            num_wins = win_counts[(method_name, 'num')]
 
             print(f"    Iterations:  mean={np.mean(num_iters):.1f}, std={np.std(num_iters):.1f}, min={np.min(num_iters)}, max={np.max(num_iters)}")
             print(f"    Final cost:  mean={np.mean(num_costs):.2f}, std={np.std(num_costs):.2f}, min={np.min(num_costs):.2f}, max={np.max(num_costs):.2f}")
             print(f"    Excess vs best: mean={np.mean(num_excess):.2f}, std={np.std(num_excess):.2f}, min={np.min(num_excess):.2f}, max={np.max(num_excess):.2f}")
             print(f"    Success rate: {num_success_rate:.1f}%")
+            print(f"    Times best: {num_wins}/{n_runs}")
 
             print("  ANALYTICAL gradients:")
             ana_iters = stats['analytical']['iterations']
             ana_costs = stats['analytical']['final_cost']
             ana_success_rate = 100 * sum(stats['analytical']['success']) / len(stats['analytical']['success'])
             ana_excess = [c - b for c, b in zip(ana_costs, per_run_best)]
+            ana_wins = win_counts[(method_name, 'ana')]
 
             print(f"    Iterations:  mean={np.mean(ana_iters):.1f}, std={np.std(ana_iters):.1f}, min={np.min(ana_iters)}, max={np.max(ana_iters)}")
             print(f"    Final cost:  mean={np.mean(ana_costs):.2f}, std={np.std(ana_costs):.2f}, min={np.min(ana_costs):.2f}, max={np.max(ana_costs):.2f}")
             print(f"    Excess vs best: mean={np.mean(ana_excess):.2f}, std={np.std(ana_excess):.2f}, min={np.min(ana_excess):.2f}, max={np.max(ana_excess):.2f}")
             print(f"    Success rate: {ana_success_rate:.1f}%")
+            print(f"    Times best: {ana_wins}/{n_runs}")
 
     print("\n" + "="*100)
 
 
 def run_single_case(run_num):
-    """Run optimization for all methods on a single random spectrum."""
-    print(f"\n{'='*100}")
-    print(f"RUN {run_num}/{NUM_RUNS}")
-    print(f"{'='*100}")
+    """Run optimization for all methods on a single random spectrum.
+
+    Returns (run_stats, output_string).
+    """
+    out = []
+    p = out.append  # shorthand
+
+    p(f"\n{'='*100}")
+    p(f"RUN {run_num}/{NUM_RUNS}")
+    p(f"{'='*100}")
 
     # Generate spectra for this run
     E, T1, T2 = generate_random_spectra()
@@ -428,7 +458,7 @@ def run_single_case(run_num):
 
     # Compute full grid (shared across all methods for this run)
     if ENABLE_PLOTTING:
-        print("\nComputing full grid...")
+        p("\nComputing full grid...")
     P1, P2, C, p1, p2, grad_p1_ana, grad_p2_ana = compute_cost_grid(
         solver, BOUNDS[0], BOUNDS[1], GRID_RESOLUTION
     )
@@ -442,9 +472,9 @@ def run_single_case(run_num):
 
     # Find global optimum (shared across all methods for this run)
     if ENABLE_PLOTTING:
-        print("\nSearching for actual global optimum with multiple random starts...")
+        p("\nSearching for actual global optimum with multiple random starts...")
     best_result = find_global_optimum(solver, BOUNDS, n_starts=GLOBAL_SEARCH_STARTS)
-    print(f"  Global optimum: p1={best_result.x[0]:.2f}, p2={best_result.x[1]:.2f}, cost={best_result.fun:.2f}")
+    p(f"  Global optimum: p1={best_result.x[0]:.2f}, p2={best_result.x[1]:.2f}, cost={best_result.fun:.2f}")
 
     # Prepare full grid data for plotting
     full_data = {
@@ -459,22 +489,22 @@ def run_single_case(run_num):
 
     # Loop over each optimization method
     for method_name, display_name in METHODS:
-        print(f"\n{'-'*100}")
-        print(f"TESTING METHOD: {display_name} ({method_name})")
-        print(f"{'-'*100}")
+        p(f"\n{'-'*100}")
+        p(f"TESTING METHOD: {display_name} ({method_name})")
+        p(f"{'-'*100}")
 
         is_gradient_free = method_name in GRADIENT_FREE_METHODS
 
         if is_gradient_free:
             # For gradient-free methods, run once and use same trajectory for both columns
-            print(f"\nRunning {display_name} (gradient-free) from starting point: p1={START_POINT[0]:.2f}, p2={START_POINT[1]:.2f}")
+            p(f"\nRunning {display_name} (gradient-free) from starting point: p1={START_POINT[0]:.2f}, p2={START_POINT[1]:.2f}")
             result_ana, trajectory_ana = run_optimization(
                 solver, start_point, BOUNDS, method=method_name, use_numerical_grad=False
             )
 
-            print(f"  Converged: {result_ana.success}")
-            print(f"  Final point: p1={result_ana.x[0]:.2f}, p2={result_ana.x[1]:.2f}, cost={result_ana.fun:.2f}")
-            print(f"  Iterations: {len(trajectory_ana)}")
+            p(f"  Converged: {result_ana.success}")
+            p(f"  Final point: p1={result_ana.x[0]:.2f}, p2={result_ana.x[1]:.2f}, cost={result_ana.fun:.2f}")
+            p(f"  Iterations: {len(trajectory_ana)}")
 
             # Use same result for both "numerical" and "analytical" columns (for plotting only)
             result_num = result_ana
@@ -494,24 +524,24 @@ def run_single_case(run_num):
 
         else:
             # Run optimization with numerical gradients
-            print(f"\nRunning {display_name} with NUMERICAL gradients from starting point: p1={START_POINT[0]:.2f}, p2={START_POINT[1]:.2f}")
+            p(f"\nRunning {display_name} with NUMERICAL gradients from starting point: p1={START_POINT[0]:.2f}, p2={START_POINT[1]:.2f}")
             result_num, trajectory_num = run_optimization(
                 solver, start_point, BOUNDS, method=method_name, use_numerical_grad=True
             )
 
-            print(f"  Converged: {result_num.success}")
-            print(f"  Final point: p1={result_num.x[0]:.2f}, p2={result_num.x[1]:.2f}, cost={result_num.fun:.2f}")
-            print(f"  Iterations: {len(trajectory_num)}")
+            p(f"  Converged: {result_num.success}")
+            p(f"  Final point: p1={result_num.x[0]:.2f}, p2={result_num.x[1]:.2f}, cost={result_num.fun:.2f}")
+            p(f"  Iterations: {len(trajectory_num)}")
 
             # Run optimization with analytical gradients
-            print(f"\nRunning {display_name} with ANALYTICAL gradients from starting point: p1={START_POINT[0]:.2f}, p2={START_POINT[1]:.2f}")
+            p(f"\nRunning {display_name} with ANALYTICAL gradients from starting point: p1={START_POINT[0]:.2f}, p2={START_POINT[1]:.2f}")
             result_ana, trajectory_ana = run_optimization(
                 solver, start_point, BOUNDS, method=method_name, use_numerical_grad=False
             )
 
-            print(f"  Converged: {result_ana.success}")
-            print(f"  Final point: p1={result_ana.x[0]:.2f}, p2={result_ana.x[1]:.2f}, cost={result_ana.fun:.2f}")
-            print(f"  Iterations: {len(trajectory_ana)}")
+            p(f"  Converged: {result_ana.success}")
+            p(f"  Final point: p1={result_ana.x[0]:.2f}, p2={result_ana.x[1]:.2f}, cost={result_ana.fun:.2f}")
+            p(f"  Iterations: {len(trajectory_ana)}")
 
             # Record statistics
             run_stats.append({
@@ -580,11 +610,12 @@ def run_single_case(run_num):
             grid_optimum = (opt_p1, opt_p2, opt_cost)
 
             # Create visualization for this method
-            create_visualization(solver, BOUNDS, full_data, zoom_data_list, ZOOM_LEVELS,
+            save_msg = create_visualization(solver, BOUNDS, full_data, zoom_data_list, ZOOM_LEVELS,
                                result_num, trajectory_num, result_ana, trajectory_ana,
                                best_result, grid_optimum, method_name, run_num)
+            p(save_msg)
 
-    return run_stats
+    return run_num, run_stats, '\n'.join(out)
 
 
 def main():
@@ -600,10 +631,21 @@ def main():
     print(f"  Zoom levels: {ZOOM_LEVELS}")
 
     # Run all cases and collect statistics
-    all_run_stats = []
-    for run_num in range(1, NUM_RUNS + 1):
-        run_stats = run_single_case(run_num)
-        all_run_stats.append(run_stats)
+    run_nums = list(range(1, NUM_RUNS + 1))
+    if NUM_RUNS > 1 and _args.workers != 1:
+        n_workers = _args.workers  # None → Pool uses cpu_count()
+        print(f"  Workers: {n_workers or multiprocessing.cpu_count()} (multiprocessing)")
+        ordered_stats = {}
+        with multiprocessing.Pool(processes=n_workers) as pool:
+            for run_num, run_stats, output in pool.imap_unordered(run_single_case, run_nums):
+                print(output)
+                ordered_stats[run_num] = run_stats
+        all_run_stats = [ordered_stats[n] for n in run_nums]
+    else:
+        all_run_stats = []
+        for _, run_stats, output in (run_single_case(n) for n in run_nums):
+            print(output)
+            all_run_stats.append(run_stats)
 
     # Print summary statistics if multiple runs
     if NUM_RUNS > 1:
