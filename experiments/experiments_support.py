@@ -49,8 +49,17 @@ def compute_cost_grid(solver, p1_range, p2_range, n_points):
     return P1, P2, C, p1, p2, Grad_p1_analytical, Grad_p2_analytical
 
 
-def run_optimization(solver, start_point, bounds, use_numerical_grad=False):
-    """Run gradient descent optimization and return trajectory."""
+def run_optimization(solver, start_point, bounds, method='L-BFGS-B', use_numerical_grad=False):
+    """Run optimization and return trajectory.
+
+    Args:
+        solver: DeconvSolver instance
+        start_point: Starting point for optimization
+        bounds: Bounds for each dimension
+        method: Scipy optimization method name
+        use_numerical_grad: If True, use numerical gradients; otherwise analytical
+                           (ignored for gradient-free methods)
+    """
     trajectory = []
 
     def cost_function(point):
@@ -63,25 +72,41 @@ def run_optimization(solver, start_point, bounds, use_numerical_grad=False):
         solver.set_point(point)
         return np.array(solver.gradient())
 
-    if use_numerical_grad:
-        # Use numerical gradients (automatic finite differences)
-        # Use a larger epsilon for finite differences since cost function is discrete
+    # Configure options based on method
+    options = {'disp': False, 'maxiter': 200}
+
+    # Gradient-free methods
+    gradient_free_methods = ['Nelder-Mead', 'Powell', 'COBYLA']
+
+    if method in gradient_free_methods:
+        # Gradient-free methods don't use gradients
         result = minimize(
             cost_function,
             start_point,
-            method='L-BFGS-B',
+            method=method,
             bounds=bounds,
-            options={'disp': False, 'maxiter': 100, 'eps': 1e-2}
+            options=options
+        )
+    elif use_numerical_grad:
+        # Use numerical gradients (automatic finite differences)
+        # Use a larger epsilon for finite differences since cost function is discrete
+        options['eps'] = 1e-2
+        result = minimize(
+            cost_function,
+            start_point,
+            method=method,
+            bounds=bounds,
+            options=options
         )
     else:
         # Use analytical gradients
         result = minimize(
             cost_function,
             start_point,
-            method='L-BFGS-B',
+            method=method,
             jac=grad_function,
             bounds=bounds,
-            options={'disp': False, 'maxiter': 100}
+            options=options
         )
 
     return result, np.array(trajectory)
