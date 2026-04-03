@@ -2,6 +2,7 @@
 import argparse
 import multiprocessing
 import numpy as np
+from tqdm import tqdm
 from wnetdeconv import DeconvSolver
 from wnet.distances import DistanceMetric
 from experiments_support import (
@@ -65,10 +66,20 @@ def _build_parser():
                         help='Maximum distance for the deconvolution solver')
     parser.add_argument('--trash-cost', type=float, default=100,
                         help='Trash cost for the deconvolution solver')
-    parser.add_argument('--scale-factor', type=float, default=1000,
-                        help='Scale factor for the deconvolution solver')
+    parser.add_argument('--auto-scale', action='store_true', default=True,
+                        help='Enable automatic scale factor computation based on data characteristics (default: True)')
+    parser.add_argument('--no-auto-scale', action='store_false', dest='auto_scale',
+                        help='Disable automatic scale factor computation and use manual value instead')
+    parser.add_argument('--scale-factor', type=float, default=None, metavar='SF',
+                        help='Manual scale factor for numerical stability (only used if --no-auto-scale is set). '
+                             'Default is auto-computed from max_sum_intensity and trash_cost using formula: '
+                             'sqrt(2^60 / (max_intensity * trash_cost))')
     parser.add_argument('--workers', type=int, default=None, metavar='N',
                         help='Number of parallel worker processes (default: number of CPUs)')
+    parser.add_argument('--random-seed', type=int, default=None, metavar='SEED',
+                        help='Random seed for reproducibility (default: None, use random seed)')
+    parser.add_argument('--out-dir', type=str, default='.', metavar='DIR',
+                        help='Output directory for saved plots (default: current directory)')
 
     return parser
 
@@ -117,7 +128,14 @@ GRADIENT_FREE_METHODS = ['Nelder-Mead', 'Powell', 'COBYLA']
 DISTANCE_METRIC = DistanceMetric[_args.distance_metric]
 MAX_DISTANCE = _args.max_distance
 TRASH_COST = _args.trash_cost
-SCALE_FACTOR = _args.scale_factor
+ENABLE_AUTO_SCALE = _args.auto_scale
+SCALE_FACTOR = None if ENABLE_AUTO_SCALE else _args.scale_factor
+
+# Random seed
+RANDOM_SEED = _args.random_seed
+
+# Output directory
+OUT_DIR = _args.out_dir
 
 # ============================================================================
 # PLOTTING FUNCTIONS (only used if ENABLE_PLOTTING=True)
@@ -321,9 +339,12 @@ if ENABLE_PLOTTING:
         else:
             filename = f"cost_map_2d_{method_name}.png"
 
-        plt.savefig(filename, dpi=DPI)
+        # Build full output path
+        import os
+        output_path = os.path.join(OUT_DIR, filename)
+        plt.savefig(output_path, dpi=DPI)
         plt.close(fig)
-        return f"  Saved {filename}"
+        return f"  Saved {output_path}"
 
 
 # ============================================================================
@@ -456,6 +477,12 @@ def run_single_case(run_num):
         scale_factor=SCALE_FACTOR,
     )
 
+    # Report computed scale factor if auto-scaling is enabled
+    if ENABLE_AUTO_SCALE:
+        p(f"Auto-computed scale factor: {solver.scale_factor:.4e}")
+    else:
+        p(f"Using manual scale factor: {solver.scale_factor:.4e}")
+
     # Compute full grid (shared across all methods for this run)
     if ENABLE_PLOTTING:
         p("\nComputing full grid...")
@@ -488,7 +515,7 @@ def run_single_case(run_num):
     run_stats = []
 
     # Loop over each optimization method
-    for method_name, display_name in METHODS:
+    for method_name, display_name in tqdm(METHODS, desc=f"Run {run_num}: Methods", leave=False):
         p(f"\n{'-'*100}")
         p(f"TESTING METHOD: {display_name} ({method_name})")
         p(f"{'-'*100}")
@@ -498,9 +525,11 @@ def run_single_case(run_num):
         if is_gradient_free:
             # For gradient-free methods, run once and use same trajectory for both columns
             p(f"\nRunning {display_name} (gradient-free) from starting point: p1={START_POINT[0]:.2f}, p2={START_POINT[1]:.2f}")
-            result_ana, trajectory_ana = run_optimization(
-                solver, start_point, BOUNDS, method=method_name, use_numerical_grad=False
-            )
+            with tqdm(total=1, desc=f"  {method_name} optimization", leave=False) as pbar:
+                result_ana, trajectory_ana = run_optimization(
+                    solver, start_point, BOUNDS, method=method_name, use_numerical_grad=False
+                )
+                pbar.update(1)
 
             p(f"  Converged: {result_ana.success}")
             p(f"  Final point: p1={result_ana.x[0]:.2f}, p2={result_ana.x[1]:.2f}, cost={result_ana.fun:.2f}")
@@ -525,9 +554,11 @@ def run_single_case(run_num):
         else:
             # Run optimization with numerical gradients
             p(f"\nRunning {display_name} with NUMERICAL gradients from starting point: p1={START_POINT[0]:.2f}, p2={START_POINT[1]:.2f}")
-            result_num, trajectory_num = run_optimization(
-                solver, start_point, BOUNDS, method=method_name, use_numerical_grad=True
-            )
+            with tqdm(total=1, desc=f"  {method_name} (numerical)", leave=False) as pbar:
+                result_num, trajectory_num = run_optimization(
+                    solver, start_point, BOUNDS, method=method_name, use_numerical_grad=True
+                )
+                pbar.update(1)
 
             p(f"  Converged: {result_num.success}")
             p(f"  Final point: p1={result_num.x[0]:.2f}, p2={result_num.x[1]:.2f}, cost={result_num.fun:.2f}")
@@ -535,9 +566,11 @@ def run_single_case(run_num):
 
             # Run optimization with analytical gradients
             p(f"\nRunning {display_name} with ANALYTICAL gradients from starting point: p1={START_POINT[0]:.2f}, p2={START_POINT[1]:.2f}")
-            result_ana, trajectory_ana = run_optimization(
-                solver, start_point, BOUNDS, method=method_name, use_numerical_grad=False
-            )
+            with tqdm(total=1, desc=f"  {method_name} (analytical)", leave=False) as pbar:
+                result_ana, trajectory_ana = run_optimization(
+                    solver, start_point, BOUNDS, method=method_name, use_numerical_grad=False
+                )
+                pbar.update(1)
 
             p(f"  Converged: {result_ana.success}")
             p(f"  Final point: p1={result_ana.x[0]:.2f}, p2={result_ana.x[1]:.2f}, cost={result_ana.fun:.2f}")
@@ -560,7 +593,7 @@ def run_single_case(run_num):
             zoom_data_list = []
             method_grid_results = [grid_results[0]]  # Include base grid result
 
-            for zoom in ZOOM_LEVELS:
+            for zoom in tqdm(ZOOM_LEVELS, desc=f"  {method_name} zoom levels", leave=False):
                 zoom_width = (p1[-1] - p1[0]) / zoom
 
                 # Center on analytical optimum
@@ -620,6 +653,17 @@ def run_single_case(run_num):
 
 def main():
     """Main entry point."""
+    import os
+
+    # Create output directory if it doesn't exist
+    if ENABLE_PLOTTING and OUT_DIR != '.':
+        os.makedirs(OUT_DIR, exist_ok=True)
+
+    # Set random seed if provided
+    if RANDOM_SEED is not None:
+        np.random.seed(RANDOM_SEED)
+        print(f"Random seed set to: {RANDOM_SEED}")
+
     print("="*100)
     print("COST MAP 2D - OPTIMIZATION COMPARISON")
     print("="*100)
@@ -629,6 +673,12 @@ def main():
     print(f"  Methods to test: {len(METHODS)}")
     print(f"  Grid resolution: {GRID_RESOLUTION}")
     print(f"  Zoom levels: {ZOOM_LEVELS}")
+    print(f"  Random seed: {RANDOM_SEED if RANDOM_SEED is not None else 'None (random)'}")
+    print(f"  Auto-scaling enabled: {ENABLE_AUTO_SCALE}")
+    if not ENABLE_AUTO_SCALE and SCALE_FACTOR is not None:
+        print(f"  Manual scale factor: {SCALE_FACTOR}")
+    if ENABLE_PLOTTING:
+        print(f"  Output directory: {os.path.abspath(OUT_DIR)}")
 
     # Run all cases and collect statistics
     run_nums = list(range(1, NUM_RUNS + 1))
@@ -637,13 +687,15 @@ def main():
         print(f"  Workers: {n_workers or multiprocessing.cpu_count()} (multiprocessing)")
         ordered_stats = {}
         with multiprocessing.Pool(processes=n_workers) as pool:
-            for run_num, run_stats, output in pool.imap_unordered(run_single_case, run_nums):
+            for run_num, run_stats, output in tqdm(pool.imap_unordered(run_single_case, run_nums),
+                                                     total=NUM_RUNS, desc="Overall progress"):
                 print(output)
                 ordered_stats[run_num] = run_stats
         all_run_stats = [ordered_stats[n] for n in run_nums]
     else:
         all_run_stats = []
-        for _, run_stats, output in (run_single_case(n) for n in run_nums):
+        for _, run_stats, output in tqdm((run_single_case(n) for n in run_nums),
+                                          total=NUM_RUNS, desc="Overall progress"):
             print(output)
             all_run_stats.append(run_stats)
 
