@@ -1,6 +1,7 @@
 """Shared support functions for deconvolution experiments."""
 import numpy as np
 from scipy.optimize import minimize
+from tqdm import tqdm
 from wnetdeconv import Spectrum_1D
 
 
@@ -38,7 +39,7 @@ def compute_cost_grid(solver, p1_range, p2_range, n_points):
     Grad_p1_analytical = np.empty_like(P1)
     Grad_p2_analytical = np.empty_like(P1)
 
-    for i in range(n_points):
+    for i in tqdm(range(n_points), desc="    Computing grid", leave=False):
         for j in range(n_points):
             solver.set_point([P1[i, j], P2[i, j]])
             C[i, j] = solver.total_cost()
@@ -116,7 +117,7 @@ def find_global_optimum(solver, bounds, n_starts=20):
     """Find global optimum using multiple random starts."""
     best_result = None
 
-    for i in range(n_starts):
+    for i in tqdm(range(n_starts), desc="    Global search starts", leave=False):
         random_start = np.array([
             np.random.uniform(bounds[0][0], bounds[0][1]),
             np.random.uniform(bounds[1][0], bounds[1][1])
