@@ -32,6 +32,8 @@ class DeconvSolver:
         Cost for discarding unmatched empirical peaks. Enables asymmetric trash mode.
     theoretical_trash_cost : int or float, optional
         Cost for discarding unmatched theoretical peaks. Enables asymmetric trash mode.
+    method : str, optional
+        Min-cost flow algorithm: "network_simplex" (default) or "cycle_canceling".
 
     Attributes
     ----------
@@ -72,6 +74,7 @@ class DeconvSolver:
         scale_factor: Optional[Union[int, float]] = None,
         experimental_trash_cost: Optional[Union[int, float]] = None,
         theoretical_trash_cost: Optional[Union[int, float]] = None,
+        method: str = "network_simplex",
     ) -> None:
 
         if trash_cost is None and experimental_trash_cost is None and theoretical_trash_cost is None:
@@ -126,6 +129,7 @@ class DeconvSolver:
             self.theoretical_spectra,
             distance,
             int(max_distance * scale_factor),
+            method=method,
         )
         if asymmetric:
             if eff_exp is not None:
