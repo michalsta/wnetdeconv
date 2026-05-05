@@ -23,10 +23,15 @@ class DeconvSolver:
         Function to compute the distance between empirical and theoretical peaks.
     max_distance : int or float
         Maximum allowed distance for matching peaks.
-    trash_cost : int or float
-        Cost for assigning unmatched peaks to 'trash'.
+    trash_cost : int or float, optional
+        Cost for assigning unmatched peaks to trash (symmetric). Used as fallback for
+        experimental_trash_cost / theoretical_trash_cost when only one is set.
     scale_factor : None, int, or float, optional
         Scaling factor for intensities and costs. If None, it is computed automatically.
+    experimental_trash_cost : int or float, optional
+        Cost for discarding unmatched empirical peaks. Enables asymmetric trash mode.
+    theoretical_trash_cost : int or float, optional
+        Cost for discarding unmatched theoretical peaks. Enables asymmetric trash mode.
 
     Attributes
     ----------
@@ -63,17 +68,30 @@ class DeconvSolver:
         theoretical_spectra: Sequence[Distribution],
         distance: DistanceMetric,
         max_distance: Union[int, float],
-        trash_cost: Union[int, float],
+        trash_cost: Optional[Union[int, float]] = None,
         scale_factor: Optional[Union[int, float]] = None,
+        experimental_trash_cost: Optional[Union[int, float]] = None,
+        theoretical_trash_cost: Optional[Union[int, float]] = None,
     ) -> None:
+
+        if trash_cost is None and experimental_trash_cost is None and theoretical_trash_cost is None:
+            raise ValueError("At least one of trash_cost, experimental_trash_cost, or theoretical_trash_cost must be provided.")
 
         assert isinstance(empirical_spectrum, Distribution)
         assert isinstance(theoretical_spectra, Sequence)
         assert all(isinstance(t, Distribution) for t in theoretical_spectra)
-        #assert callable(distance_function)
         assert isinstance(max_distance, (int, float))
-        assert isinstance(trash_cost, (int, float))
+        for name, val in [("trash_cost", trash_cost), ("experimental_trash_cost", experimental_trash_cost), ("theoretical_trash_cost", theoretical_trash_cost)]:
+            assert val is None or isinstance(val, (int, float)), f"{name} must be a number"
         assert scale_factor is None or isinstance(scale_factor, (int, float))
+
+        asymmetric = experimental_trash_cost is not None or theoretical_trash_cost is not None
+        if asymmetric:
+            eff_exp  = experimental_trash_cost if experimental_trash_cost is not None else trash_cost
+            eff_theo = theoretical_trash_cost  if theoretical_trash_cost  is not None else trash_cost
+            active_costs = [c for c in (eff_exp, eff_theo) if c is not None]
+        else:
+            active_costs = [trash_cost]
 
         if scale_factor is None:
             ALMOST_MAXINT = 2**60
@@ -94,7 +112,7 @@ class DeconvSolver:
             if max_distance_in_space == 0:
                 max_distance_in_space = 1.0
 
-            scale_factor = np.sqrt(ALMOST_MAXINT / max((max_sum_intensity * trash_cost,)))
+            scale_factor = np.sqrt(ALMOST_MAXINT / (max_sum_intensity * min(active_costs)))
             assert (
                 scale_factor > 0
             ), "Can't auto-compute a sensible scale factor. You might have some luck with setting it manually, but it probably means something about your data or trash_cost is off."
@@ -109,7 +127,13 @@ class DeconvSolver:
             distance,
             int(max_distance * scale_factor),
         )
-        self.graph.add_simple_trash(int(trash_cost * scale_factor))
+        if asymmetric:
+            if eff_exp is not None:
+                self.graph.add_experimental_trash(int(eff_exp * scale_factor))
+            if eff_theo is not None:
+                self.graph.add_theoretical_trash(int(eff_theo * scale_factor))
+        else:
+            self.graph.add_simple_trash(int(trash_cost * scale_factor))
         self.graph.build()
         self.point = None
 
