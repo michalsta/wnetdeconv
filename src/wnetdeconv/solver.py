@@ -33,7 +33,7 @@ class DeconvSolver:
     theoretical_trash_cost : int or float, optional
         Cost for discarding unmatched theoretical peaks. Enables asymmetric trash mode.
     method : str, optional
-        Min-cost flow algorithm: "network_simplex" (default) or "cycle_canceling".
+        Min-cost flow algorithm: "network_simplex" (default), "cycle_canceling", "cost_scaling", or "capacity_scaling".
 
     Attributes
     ----------
