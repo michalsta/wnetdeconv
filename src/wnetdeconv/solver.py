@@ -2,6 +2,7 @@ from collections import namedtuple
 from collections.abc import Sequence
 from typing import Callable, Optional, Union, List, Tuple
 import numpy as np
+from scipy.optimize import minimize, OptimizeResult
 
 from wnet import Distribution, WassersteinNetwork
 from wnet.distances import DistanceMetric
@@ -268,3 +269,68 @@ class DeconvSolver:
             print("  Cost:", s.total_cost())
             print("  Matching density:", s.matching_density())
             print("  Theoretical spectra involved:", s.theoretical_spectra_involved())
+
+
+class ConstrainedSolver(DeconvSolver):
+    """
+    DeconvSolver with a total-mass equality constraint:
+
+        sum_s(w_s * total_intensity_s) = total_empirical_intensity
+
+    This couples the proportions so that components with extra unmatched peaks
+    (diluted libraries) are naturally down-weighted without tuning
+    theo_trash_cost.  The constraint is enforced during the call to
+    optimize(), which uses SLSQP instead of L-BFGS-B.
+
+    All DeconvSolver methods (set_point, total_cost, gradient, flows, …)
+    are inherited unchanged and work identically.
+
+    Parameters
+    ----------
+    Same as DeconvSolver.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._emp_total = self.empirical_spectrum.sum_intensities
+        self._theo_totals = np.array([t.sum_intensities for t in self.theoretical_spectra])
+
+    def optimize(self, x0: Optional[np.ndarray] = None) -> OptimizeResult:
+        """
+        Minimize total transport cost subject to the total-mass constraint.
+
+        Parameters
+        ----------
+        x0 : np.ndarray, optional
+            Initial proportions.  Must satisfy the constraint.  Defaults to
+            equal weights scaled to satisfy sum_s(w_s * I_s) = I_emp.
+
+        Returns
+        -------
+        scipy.optimize.OptimizeResult
+            Standard scipy result; .x holds the optimal proportions.
+        """
+        n = len(self.theoretical_spectra)
+        if x0 is None:
+            w0 = self._emp_total / self._theo_totals.sum()
+            x0 = np.full(n, w0)
+
+        def cost_and_grad(w):
+            self.set_point(w)
+            return self.total_cost(), self.gradient()
+
+        constraint = {
+            'type': 'eq',
+            'fun': lambda w: np.dot(w, self._theo_totals) - self._emp_total,
+            'jac': lambda w: self._theo_totals,
+        }
+
+        return minimize(
+            cost_and_grad,
+            x0=x0,
+            jac=True,
+            method='SLSQP',
+            bounds=[(0.0, None)] * n,
+            constraints=constraint,
+            options={'maxiter': 2000, 'ftol': 1e-14},
+        )
