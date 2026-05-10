@@ -3,10 +3,9 @@ from wnet.distances import DistanceMetric
 import numpy as np
 from scipy.optimize import minimize
 
-
 E = Spectrum_1D([1, 100], [10, 30])
 
-T1 = Spectrum_1D([1], [2])    # optimal proportion: 5
+T1 = Spectrum_1D([1], [2])  # optimal proportion: 5
 
 T2 = Spectrum_1D([100], [3])  # optimal proportion: 10
 
@@ -22,11 +21,14 @@ solver = DeconvSolver(
 
 step = [0]
 
+
 def cost_and_grad(point):
     solver.set_point(point)
     c = solver.total_cost()
     g = solver.gradient()
-    print(f"step {step[0]:3d}  point=[{point[0]:8.4f}, {point[1]:8.4f}]  cost={c:12.4f}  grad=[{g[0]:10.4f}, {g[1]:10.4f}]")
+    print(
+        f"step {step[0]:3d}  point=[{point[0]:8.4f}, {point[1]:8.4f}]  cost={c:12.4f}  grad=[{g[0]:10.4f}, {g[1]:10.4f}]"
+    )
     step[0] += 1
     return c, g
 
