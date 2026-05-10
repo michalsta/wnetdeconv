@@ -105,18 +105,12 @@ class DeconvSolver:
             )
             max_sum_intensity = max(empirical_sum_intensity, theoretical_sum_intensity)
 
-            bounding_box_min, bounding_box_max = empirical_spectrum.bounding_box()
-            for t in theoretical_spectra:
-                t_min, t_max = t.bounding_box()
-                bounding_box_min = np.minimum(bounding_box_min, t_min)
-                bounding_box_max = np.maximum(bounding_box_max, t_max)
-            max_distance_in_space = np.linalg.norm(
-                bounding_box_max - bounding_box_min, ord=1
-            )
-            if max_distance_in_space == 0:
-                max_distance_in_space = 1.0
-
-            scale_factor = np.sqrt(ALMOST_MAXINT / (max_sum_intensity * min(active_costs)))
+            # Bound the maximum cost per unit of flow in the scaled integer network.
+            # Matching edges pay distance * sf per unit of flow (flow scaled by sf);
+            # trash edges pay trash_cost * sf per unit of flow.  Total cost is at most
+            # max_cost_per_unit_flow * max_sum_intensity * sf^2, which must stay < 2^60.
+            max_cost_per_unit_flow = max([max_distance] + active_costs)
+            scale_factor = np.sqrt(ALMOST_MAXINT / (max_sum_intensity * max_cost_per_unit_flow))
             assert (
                 scale_factor > 0
             ), "Can't auto-compute a sensible scale factor. You might have some luck with setting it manually, but it probably means something about your data or trash_cost is off."
