@@ -1,23 +1,14 @@
-"""2D map of (p1, p2) -> total_cost for the two-spectrum deconvolution example."""
+"""N-dimensional map with 2D slices through the true optimum for N-spectrum deconvolution."""
 import argparse
 import multiprocessing
 import numpy as np
 from tqdm import tqdm
 from wnetdeconv import DeconvSolver
 from wnet.distances import DistanceMetric
-import experiments_support as _es
 from experiments_support import (
     generate_random_spectra,
     run_optimization,
-    build_grid_tasks,
-    assemble_grid,
-    build_global_search_tasks,
-    build_optim_tasks,
-    _compute_row,
-    _compute_tagged_row,
-    _run_global_start,
-    _run_optim_task,
-    reduce_global_results,
+    find_global_optimum
 )
 
 # ============================================================================
@@ -30,6 +21,16 @@ def _build_parser():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
+    # Dimensionality
+    parser.add_argument('--n-spectra', type=int, default=3, metavar='N',
+                        help='Number of theoretical spectra (dimensionality)')
+
+    # Slice configuration
+    parser.add_argument('--n-principal-slices', type=int, default=None, metavar='N',
+                        help='Number of principal axis slices (default: all pairs, i.e., N*(N-1)/2)')
+    parser.add_argument('--n-random-slices', type=int, default=3, metavar='N',
+                        help='Number of random orientation slices')
+
     # Control flags
     parser.add_argument('--no-plot', action='store_true',
                         help='Disable all plot generation')
@@ -37,29 +38,28 @@ def _build_parser():
                         help='Number of runs with different random spectra')
 
     # Optimization settings
-    parser.add_argument('--start-point', nargs=2, type=float,
-                        default=[15.0, 20.0], metavar=('P1', 'P2'),
-                        help='Starting point for optimization')
-    parser.add_argument('--bounds', nargs=4, type=float,
-                        default=[0, 25, 0, 25],
-                        metavar=('P1_MIN', 'P1_MAX', 'P2_MIN', 'P2_MAX'),
-                        help='Bounds for p1 and p2')
+    parser.add_argument('--start-point', nargs='+', type=float,
+                        default=None, metavar='P',
+                        help='Starting point for optimization (must match n-spectra dimensions)')
+    parser.add_argument('--bounds', nargs=2, type=float,
+                        default=[0, 25], metavar=('MIN', 'MAX'),
+                        help='Bounds for all proportions (same for all dimensions)')
     parser.add_argument('--max-iterations', type=int, default=200, metavar='N',
                         help='Maximum iterations for optimization')
-    parser.add_argument('--global-search-starts', type=int, default=20, metavar='N',
+    parser.add_argument('--global-search-starts', type=int, default=50, metavar='N',
                         help='Number of random starts for global optimum search')
 
     # Grid computation settings
-    parser.add_argument('--grid-resolution', type=int, default=200, metavar='N',
-                        help='Number of points per axis for cost grid')
+    parser.add_argument('--grid-resolution', type=int, default=150, metavar='N',
+                        help='Number of points per axis for cost grid (2D slices)')
     parser.add_argument('--zoom-levels', nargs='+', type=int,
-                        default=[10, 100, 1000, 10000, 100000], metavar='Z',
+                        default=[10, 100, 1000], metavar='Z',
                         help='Zoom levels to compute')
 
     # Plotting settings (only used without --no-plot)
     parser.add_argument('--figure-size', nargs=2, type=float,
                         default=[30.0, 30.0], metavar=('W', 'H'),
-                        help='Figure size in inches')
+                        help='Figure size in inches (per slice)')
     parser.add_argument('--dpi', type=int, default=150,
                         help='Resolution for saved plots')
     parser.add_argument('--arrow-subsample', type=int, default=20, metavar='N',
@@ -79,9 +79,7 @@ def _build_parser():
     parser.add_argument('--no-auto-scale', action='store_false', dest='auto_scale',
                         help='Disable automatic scale factor computation and use manual value instead')
     parser.add_argument('--scale-factor', type=float, default=None, metavar='SF',
-                        help='Manual scale factor for numerical stability (only used if --no-auto-scale is set). '
-                             'Default is auto-computed from max_sum_intensity and trash_cost using formula: '
-                             'sqrt(2^60 / (max_intensity * trash_cost))')
+                        help='Manual scale factor for numerical stability (only used if --no-auto-scale is set)')
     parser.add_argument('--workers', type=int, default=None, metavar='N',
                         help='Number of parallel worker processes (default: number of CPUs)')
     parser.add_argument('--random-seed', type=int, default=None, metavar='SEED',
@@ -98,13 +96,32 @@ _args = _build_parser().parse_args()
 # CONFIGURATION CONSTANTS
 # ============================================================================
 
+# Dimensionality
+N_SPECTRA = _args.n_spectra
+N_DIMS = N_SPECTRA
+
+# Slice configuration
+if _args.n_principal_slices is None:
+    # Default: all pairs of principal axes
+    N_PRINCIPAL_SLICES = (N_DIMS * (N_DIMS - 1)) // 2
+else:
+    N_PRINCIPAL_SLICES = _args.n_principal_slices
+N_RANDOM_SLICES = _args.n_random_slices
+
 # Control flags
 ENABLE_PLOTTING = not _args.no_plot
 NUM_RUNS = _args.num_runs
 
 # Optimization settings
-START_POINT = _args.start_point
-BOUNDS = [(_args.bounds[0], _args.bounds[1]), (_args.bounds[2], _args.bounds[3])]
+if _args.start_point is None:
+    # Default starting point: middle of bounds for all dimensions
+    START_POINT = [((_args.bounds[0] + _args.bounds[1]) / 2) * 0.8] * N_DIMS
+else:
+    START_POINT = _args.start_point
+    if len(START_POINT) != N_DIMS:
+        raise ValueError(f"--start-point must have {N_DIMS} values (got {len(START_POINT)})")
+
+BOUNDS = [(_args.bounds[0], _args.bounds[1])] * N_DIMS
 MAX_ITERATIONS = _args.max_iterations
 GLOBAL_SEARCH_STARTS = _args.global_search_starts
 
@@ -112,14 +129,13 @@ GLOBAL_SEARCH_STARTS = _args.global_search_starts
 GRID_RESOLUTION = _args.grid_resolution
 ZOOM_LEVELS = _args.zoom_levels
 
-# Plotting settings (only used if ENABLE_PLOTTING=True)
+# Plotting settings
 FIGURE_SIZE = tuple(_args.figure_size)
 DPI = _args.dpi
 ARROW_SUBSAMPLE = _args.arrow_subsample
 ARROW_ALPHA = _args.arrow_alpha
 
 # Optimization methods to test
-# Each entry: (method_name, display_name)
 METHODS = [
     ('L-BFGS-B', 'Limited-memory BFGS with Bounds'),
     ('TNC', 'Truncated Newton Conjugate-Gradient'),
@@ -129,7 +145,6 @@ METHODS = [
     ('COBYLA', 'Constrained Optimization BY Linear Approximation'),
 ]
 
-# Gradient-free methods (subset of METHODS)
 GRADIENT_FREE_METHODS = ['Nelder-Mead', 'Powell', 'COBYLA']
 
 # Deconvolution solver parameters
@@ -146,7 +161,126 @@ RANDOM_SEED = _args.random_seed
 OUT_DIR = _args.out_dir
 
 # ============================================================================
-# PLOTTING FUNCTIONS (only used if ENABLE_PLOTTING=True)
+# N-DIMENSIONAL GRID AND SLICE FUNCTIONS
+# ============================================================================
+
+def generate_slice_directions(n_dims, n_principal, n_random, random_state=None):
+    """Generate slice directions (pairs of orthonormal basis vectors in N-D space).
+
+    Returns:
+        List of tuples (axis1_idx, axis2_idx, u, v, label) where:
+        - axis1_idx, axis2_idx: indices for principal slices (None for random)
+        - u, v: orthonormal vectors defining the 2D slice plane
+        - label: descriptive label for the slice
+    """
+    rng = np.random.RandomState(random_state)
+    slices = []
+
+    # Principal axis slices
+    principal_pairs = []
+    for i in range(n_dims):
+        for j in range(i + 1, n_dims):
+            principal_pairs.append((i, j))
+
+    # Select requested number of principal slices
+    if n_principal > len(principal_pairs):
+        n_principal = len(principal_pairs)
+
+    selected_pairs = principal_pairs[:n_principal]
+
+    for i, j in selected_pairs:
+        u = np.zeros(n_dims)
+        v = np.zeros(n_dims)
+        u[i] = 1.0
+        v[j] = 1.0
+        slices.append((i, j, u, v, f"principal_p{i+1}_p{j+1}"))
+
+    # Random slices
+    for r in range(n_random):
+        # Generate two random orthonormal vectors
+        u = rng.randn(n_dims)
+        u = u / np.linalg.norm(u)
+
+        v = rng.randn(n_dims)
+        # Gram-Schmidt orthogonalization
+        v = v - np.dot(v, u) * u
+        v = v / np.linalg.norm(v)
+
+        slices.append((None, None, u, v, f"random_{r+1}"))
+
+    return slices
+
+
+def compute_cost_on_2d_slice(solver, center_point, u, v, bounds_2d, resolution):
+    """Compute cost on a 2D slice through center_point along directions u and v.
+
+    Args:
+        solver: DeconvSolver instance
+        center_point: N-D point to slice through (typically the global optimum)
+        u, v: orthonormal vectors defining the slice plane
+        bounds_2d: ((u_min, u_max), (v_min, v_max)) bounds in the 2D slice coordinates
+        resolution: number of grid points per dimension
+
+    Returns:
+        U, V, C, u_1d, v_1d, grad_u_ana, grad_v_ana
+    """
+    u_min, u_max = bounds_2d[0]
+    v_min, v_max = bounds_2d[1]
+
+    u_1d = np.linspace(u_min, u_max, resolution)
+    v_1d = np.linspace(v_min, v_max, resolution)
+    U, V = np.meshgrid(u_1d, v_1d)
+
+    C = np.zeros_like(U)
+    grad_u_ana = np.zeros_like(U)
+    grad_v_ana = np.zeros_like(U)
+
+    # Compute cost and gradients at each grid point
+    for i in range(resolution):
+        for j in range(resolution):
+            # Convert 2D slice coordinates to N-D space
+            point_nd = center_point + U[i, j] * u + V[i, j] * v
+
+            # Ensure we're within bounds and normalize
+            point_nd = np.clip(point_nd, 0, None)
+
+            # Compute cost and gradient
+            solver.set_point(point_nd)
+            cost = solver.total_cost()
+            grad_nd = np.array(solver.gradient())
+
+            C[i, j] = cost
+            # Project gradient onto slice plane
+            grad_u_ana[i, j] = np.dot(grad_nd, u)
+            grad_v_ana[i, j] = np.dot(grad_nd, v)
+
+    return U, V, C, u_1d, v_1d, grad_u_ana, grad_v_ana
+
+
+def project_trajectory_to_slice(trajectory_nd, center_point, u, v):
+    """Project N-D trajectory onto a 2D slice.
+
+    Args:
+        trajectory_nd: (n_points, n_dims) array of trajectory points
+        center_point: N-D center of the slice
+        u, v: orthonormal vectors defining the slice plane
+
+    Returns:
+        (n_points, 2) array of 2D coordinates in (u, v) basis
+    """
+    # Translate trajectory relative to center
+    traj_centered = trajectory_nd - center_point
+
+    # Project onto u and v directions
+    traj_2d = np.zeros((len(trajectory_nd), 2))
+    traj_2d[:, 0] = np.dot(traj_centered, u)
+    traj_2d[:, 1] = np.dot(traj_centered, v)
+
+    return traj_2d
+
+
+# ============================================================================
+# PLOTTING FUNCTIONS
 # ============================================================================
 
 if ENABLE_PLOTTING:
@@ -156,9 +290,9 @@ if ENABLE_PLOTTING:
     def plot_trajectory(ax, trajectory, zoom_bounds=None):
         """Plot optimization trajectory with black-to-white gradient."""
         if zoom_bounds:
-            p1_min, p1_max, p2_min, p2_max = zoom_bounds
-            mask = ((trajectory[:, 0] >= p1_min) & (trajectory[:, 0] <= p1_max) &
-                    (trajectory[:, 1] >= p2_min) & (trajectory[:, 1] <= p2_max))
+            u_min, u_max, v_min, v_max = zoom_bounds
+            mask = ((trajectory[:, 0] >= u_min) & (trajectory[:, 0] <= u_max) &
+                    (trajectory[:, 1] >= v_min) & (trajectory[:, 1] <= v_max))
             if not np.any(mask):
                 return
             traj = trajectory[mask]
@@ -186,18 +320,18 @@ if ENABLE_PLOTTING:
                    s=40, zorder=5, edgecolors='white', linewidths=1.0, label='start')
 
 
-    def add_optima_markers(ax, scipy_result, global_result, grid_optimum, precision=2):
+    def add_optima_markers(ax, scipy_result_2d, global_result_2d, grid_optimum, precision=2):
         """Add three optima markers with costs in legend."""
         fmt = f"{{:.{precision}f}}"
 
         # Scipy endpoint
-        scipy_label = f"scipy end ({fmt.format(scipy_result.x[0])}, {fmt.format(scipy_result.x[1])}, cost={scipy_result.fun:.0f})"
-        ax.scatter([scipy_result.x[0]], [scipy_result.x[1]], color='cyan', marker='X',
+        scipy_label = f"scipy end ({fmt.format(scipy_result_2d[0])}, {fmt.format(scipy_result_2d[1])}, cost={scipy_result_2d[2]:.0f})"
+        ax.scatter([scipy_result_2d[0]], [scipy_result_2d[1]], color='cyan', marker='X',
                    s=50, zorder=7, edgecolors='black', linewidths=1.0, label=scipy_label)
 
-        # Global optimum
-        global_label = f"global opt ({fmt.format(global_result.x[0])}, {fmt.format(global_result.x[1])}, cost={global_result.fun:.0f})"
-        ax.scatter([global_result.x[0]], [global_result.x[1]], color='magenta', marker='D',
+        # Global optimum (should be at origin since we center on it)
+        global_label = f"global opt (0.0, 0.0, cost={global_result_2d[2]:.0f})"
+        ax.scatter([0.0], [0.0], color='magenta', marker='D',
                    s=50, zorder=7, edgecolors='white', linewidths=1.0, label=global_label)
 
         # Grid minimum
@@ -206,45 +340,44 @@ if ENABLE_PLOTTING:
                    s=50, zorder=7, edgecolors='black', linewidths=1.0, label=grid_label)
 
 
-    def plot_single_map(ax, P1, P2, data, trajectory, scipy_result, global_result, grid_optimum,
+    def plot_single_map(ax, U, V, data, trajectory, scipy_result_2d, global_result_2d, grid_optimum,
                         title, cmap, label, zoom_bounds=None, precision=2, vmin=None, vmax=None):
         """Plot a single map (cost or gradient magnitude) with trajectory."""
         if vmin is None or vmax is None:
             vmin, vmax = np.percentile(data, [5, 95])
 
-        pcm = ax.pcolormesh(P1, P2, data, shading="auto", cmap=cmap, vmin=vmin, vmax=vmax)
+        pcm = ax.pcolormesh(U, V, data, shading="auto", cmap=cmap, vmin=vmin, vmax=vmax)
         plt.colorbar(pcm, ax=ax, label=label)
 
         plot_trajectory(ax, trajectory, zoom_bounds)
-        add_optima_markers(ax, scipy_result, global_result, grid_optimum, precision)
+        add_optima_markers(ax, scipy_result_2d, global_result_2d, grid_optimum, precision)
 
-        # Set axis limits if zoom bounds provided
         if zoom_bounds:
             ax.set_xlim(zoom_bounds[0], zoom_bounds[1])
             ax.set_ylim(zoom_bounds[2], zoom_bounds[3])
 
-        ax.set_xlabel("proportion 1")
-        ax.set_ylabel("proportion 2")
+        ax.set_xlabel("u direction")
+        ax.set_ylabel("v direction")
         ax.set_title(title, fontsize=9)
         ax.set_aspect('equal')
         ax.legend(loc='best', fontsize=6)
 
 
-    def plot_zoom_row(axes, data_dict, trajectory_num, trajectory_ana, scipy_result_num, scipy_result_ana,
-                      global_result, grid_optimum, zoom_label, precision=2):
+    def plot_zoom_row(axes, data_dict, trajectory_num, trajectory_ana, scipy_result_num_2d, scipy_result_ana_2d,
+                      global_result_2d, grid_optimum, zoom_label, precision=2):
         """Plot one row showing: cost+numeric grad walk, numeric gradient, cost+analytic grad walk, analytic gradient, difference."""
-        P1 = data_dict['P1']
-        P2 = data_dict['P2']
+        U = data_dict['U']
+        V = data_dict['V']
         C = data_dict['C']
-        grad_p1_num = data_dict['grad_p1_num']
-        grad_p2_num = data_dict['grad_p2_num']
-        grad_p1_ana = data_dict['grad_p1_ana']
-        grad_p2_ana = data_dict['grad_p2_ana']
+        grad_u_num = data_dict['grad_u_num']
+        grad_v_num = data_dict['grad_v_num']
+        grad_u_ana = data_dict['grad_u_ana']
+        grad_v_ana = data_dict['grad_v_ana']
         bounds = data_dict['bounds']
 
         # Compute gradient magnitudes
-        grad_norm_num = np.sqrt(grad_p1_num**2 + grad_p2_num**2)
-        grad_norm_ana = np.sqrt(grad_p1_ana**2 + grad_p2_ana**2)
+        grad_norm_num = np.sqrt(grad_u_num**2 + grad_v_num**2)
+        grad_norm_ana = np.sqrt(grad_u_ana**2 + grad_v_ana**2)
         grad_diff = np.abs(grad_norm_ana - grad_norm_num)
 
         # Use consistent color scale for gradients
@@ -252,102 +385,125 @@ if ENABLE_PLOTTING:
         gmin, gmax = np.percentile(all_grad_data, [5, 95])
 
         # Column 1: Cost landscape with numerical gradient walk
-        plot_single_map(axes[0], P1, P2, C, trajectory_num, scipy_result_num, global_result, grid_optimum,
+        plot_single_map(axes[0], U, V, C, trajectory_num, scipy_result_num_2d, global_result_2d, grid_optimum,
                         f"Cost + Numerical Walk (zoom {zoom_label})", "viridis", "cost",
                         bounds, precision)
 
-        # Column 2: Numerical gradient with arrows and numerical walk
-        vmin, vmax = np.percentile(grad_norm_num, [5, 95])
-        pcm = axes[1].pcolormesh(P1, P2, grad_norm_num, shading="auto", cmap="plasma", vmin=gmin, vmax=gmax)
+        # Column 2: Numerical gradient with arrows
+        pcm = axes[1].pcolormesh(U, V, grad_norm_num, shading="auto", cmap="plasma", vmin=gmin, vmax=gmax)
         plt.colorbar(pcm, ax=axes[1], label="gradient magnitude")
 
-        # Add gradient arrows (normalized to same length)
-        step = max(1, len(P1) // ARROW_SUBSAMPLE)
-        # Normalize gradients to unit vectors
-        grad_mag = np.sqrt(grad_p1_num[::step, ::step]**2 + grad_p2_num[::step, ::step]**2)
-        grad_mag = np.where(grad_mag == 0, 1, grad_mag)  # Avoid division by zero
-        grad_p1_norm = grad_p1_num[::step, ::step] / grad_mag
-        grad_p2_norm = grad_p2_num[::step, ::step] / grad_mag
-        axes[1].quiver(P1[::step, ::step], P2[::step, ::step],
-                       grad_p1_norm, grad_p2_norm,
+        # Add gradient arrows
+        step = max(1, len(U) // ARROW_SUBSAMPLE)
+        grad_mag = np.sqrt(grad_u_num[::step, ::step]**2 + grad_v_num[::step, ::step]**2)
+        grad_mag = np.where(grad_mag == 0, 1, grad_mag)
+        grad_u_norm = grad_u_num[::step, ::step] / grad_mag
+        grad_v_norm = grad_v_num[::step, ::step] / grad_mag
+        axes[1].quiver(U[::step, ::step], V[::step, ::step],
+                       grad_u_norm, grad_v_norm,
                        alpha=ARROW_ALPHA, color='black')
 
         plot_trajectory(axes[1], trajectory_num, bounds)
-        add_optima_markers(axes[1], scipy_result_num, global_result, grid_optimum, precision)
+        add_optima_markers(axes[1], scipy_result_num_2d, global_result_2d, grid_optimum, precision)
         if bounds:
             axes[1].set_xlim(bounds[0], bounds[1])
             axes[1].set_ylim(bounds[2], bounds[3])
-        axes[1].set_xlabel("proportion 1")
-        axes[1].set_ylabel("proportion 2")
+        axes[1].set_xlabel("u direction")
+        axes[1].set_ylabel("v direction")
         axes[1].set_title(f"Gradient Numerical + Numerical Walk (zoom {zoom_label})", fontsize=9)
         axes[1].set_aspect('equal')
         axes[1].legend(loc='best', fontsize=6)
 
         # Column 3: Cost landscape with analytical gradient walk
-        plot_single_map(axes[2], P1, P2, C, trajectory_ana, scipy_result_ana, global_result, grid_optimum,
+        plot_single_map(axes[2], U, V, C, trajectory_ana, scipy_result_ana_2d, global_result_2d, grid_optimum,
                         f"Cost + Analytical Walk (zoom {zoom_label})", "viridis", "cost",
                         bounds, precision)
 
-        # Column 4: Analytical gradient with arrows and analytical walk
-        pcm = axes[3].pcolormesh(P1, P2, grad_norm_ana, shading="auto", cmap="plasma", vmin=gmin, vmax=gmax)
+        # Column 4: Analytical gradient with arrows
+        pcm = axes[3].pcolormesh(U, V, grad_norm_ana, shading="auto", cmap="plasma", vmin=gmin, vmax=gmax)
         plt.colorbar(pcm, ax=axes[3], label="gradient magnitude")
 
-        # Add gradient arrows (normalized to same length)
-        # Normalize gradients to unit vectors
-        grad_mag_ana = np.sqrt(grad_p1_ana[::step, ::step]**2 + grad_p2_ana[::step, ::step]**2)
-        grad_mag_ana = np.where(grad_mag_ana == 0, 1, grad_mag_ana)  # Avoid division by zero
-        grad_p1_ana_norm = grad_p1_ana[::step, ::step] / grad_mag_ana
-        grad_p2_ana_norm = grad_p2_ana[::step, ::step] / grad_mag_ana
-        axes[3].quiver(P1[::step, ::step], P2[::step, ::step],
-                       grad_p1_ana_norm, grad_p2_ana_norm,
+        grad_mag_ana = np.sqrt(grad_u_ana[::step, ::step]**2 + grad_v_ana[::step, ::step]**2)
+        grad_mag_ana = np.where(grad_mag_ana == 0, 1, grad_mag_ana)
+        grad_u_ana_norm = grad_u_ana[::step, ::step] / grad_mag_ana
+        grad_v_ana_norm = grad_v_ana[::step, ::step] / grad_mag_ana
+        axes[3].quiver(U[::step, ::step], V[::step, ::step],
+                       grad_u_ana_norm, grad_v_ana_norm,
                        alpha=ARROW_ALPHA, color='black')
 
         plot_trajectory(axes[3], trajectory_ana, bounds)
-        add_optima_markers(axes[3], scipy_result_ana, global_result, grid_optimum, precision)
+        add_optima_markers(axes[3], scipy_result_ana_2d, global_result_2d, grid_optimum, precision)
         if bounds:
             axes[3].set_xlim(bounds[0], bounds[1])
             axes[3].set_ylim(bounds[2], bounds[3])
-        axes[3].set_xlabel("proportion 1")
-        axes[3].set_ylabel("proportion 2")
+        axes[3].set_xlabel("u direction")
+        axes[3].set_ylabel("v direction")
         axes[3].set_title(f"Gradient Analytical + Analytical Walk (zoom {zoom_label})", fontsize=9)
         axes[3].set_aspect('equal')
         axes[3].legend(loc='best', fontsize=6)
 
         # Column 5: Difference
-        plot_single_map(axes[4], P1, P2, grad_diff, trajectory_ana, scipy_result_ana, global_result, grid_optimum,
+        plot_single_map(axes[4], U, V, grad_diff, trajectory_ana, scipy_result_ana_2d, global_result_2d, grid_optimum,
                         f"Gradient Difference (zoom {zoom_label})", "hot", "difference",
                         bounds, precision)
 
 
-    def create_visualization(solver, bounds, full_data, zoom_data_list, zoom_levels,
-                             result_num, trajectory_num, result_ana, trajectory_ana,
-                             best_result, grid_optimum, method_name, run_num=1):
-        """Create and save visualization for a specific optimization method."""
-        # Create figure with 6 rows x 5 columns
+    def create_visualization_for_slice(solver, slice_info, full_data, zoom_data_list, zoom_levels,
+                                      result_num_nd, trajectory_num_nd, result_ana_nd, trajectory_ana_nd,
+                                      best_result_nd, method_name, run_num=1):
+        """Create and save visualization for a specific slice and method."""
+        axis1_idx, axis2_idx, u, v, slice_label = slice_info
+
+        # Project N-D results to 2D
+        center = best_result_nd.x
+
+        # Project trajectories
+        traj_num_2d = project_trajectory_to_slice(trajectory_num_nd, center, u, v)
+        traj_ana_2d = project_trajectory_to_slice(trajectory_ana_nd, center, u, v)
+
+        # Project scipy results
+        scipy_num_2d = project_trajectory_to_slice(result_num_nd.x.reshape(1, -1), center, u, v)[0]
+        scipy_ana_2d = project_trajectory_to_slice(result_ana_nd.x.reshape(1, -1), center, u, v)[0]
+        scipy_num_2d_result = (scipy_num_2d[0], scipy_num_2d[1], result_num_nd.fun)
+        scipy_ana_2d_result = (scipy_ana_2d[0], scipy_ana_2d[1], result_ana_nd.fun)
+
+        # Global result is at origin (0, 0) since we center on it
+        global_2d_result = (0.0, 0.0, best_result_nd.fun)
+
+        # Create figure with rows for different zoom levels
+        n_rows = 1 + len(zoom_levels)
         fig = plt.figure(figsize=FIGURE_SIZE)
 
-        # Row 1: Full view (1x)
-        axes_row1 = [plt.subplot(6, 5, i+1) for i in range(5)]
-        plot_zoom_row(axes_row1, full_data, trajectory_num, trajectory_ana, result_num, result_ana,
-                      best_result, grid_optimum, "1x", precision=1)
+        # Add slice information to title
+        if axis1_idx is not None:
+            slice_title = f"{slice_label} (axes {axis1_idx+1}, {axis2_idx+1})"
+        else:
+            slice_title = slice_label
+        fig.suptitle(f"Method: {method_name} | Slice: {slice_title}", fontsize=12, y=0.995)
 
-        # Rows 2-6: Zoom levels
+        # Row 1: Full view
+        axes_row1 = [plt.subplot(n_rows, 5, i+1) for i in range(5)]
+        plot_zoom_row(axes_row1, full_data, traj_num_2d, traj_ana_2d,
+                     scipy_num_2d_result, scipy_ana_2d_result,
+                     global_2d_result, full_data['grid_optimum'], "1x", precision=1)
+
+        # Remaining rows: Zoom levels
         for i, (zoom, data) in enumerate(zip(zoom_levels, zoom_data_list)):
             row = i + 2
-            axes_row = [plt.subplot(6, 5, 5*(row-1) + j + 1) for j in range(5)]
+            axes_row = [plt.subplot(n_rows, 5, 5*(row-1) + j + 1) for j in range(5)]
             precision = 2 if zoom <= 100 else (3 if zoom <= 1000 else (4 if zoom <= 10000 else 5))
-            plot_zoom_row(axes_row, data, trajectory_num, trajectory_ana, result_num, result_ana,
-                          best_result, grid_optimum, f"{zoom}x", precision)
+            plot_zoom_row(axes_row, data, traj_num_2d, traj_ana_2d,
+                         scipy_num_2d_result, scipy_ana_2d_result,
+                         global_2d_result, data['grid_optimum'], f"{zoom}x", precision)
 
         plt.tight_layout()
 
-        # Include run number in filename if NUM_RUNS > 1
+        # Filename includes slice label
         if NUM_RUNS > 1:
-            filename = f"cost_map_2d_{method_name}_run{run_num:03d}.png"
+            filename = f"cost_map_Nd_{method_name}_{slice_label}_run{run_num:03d}.png"
         else:
-            filename = f"cost_map_2d_{method_name}.png"
+            filename = f"cost_map_Nd_{method_name}_{slice_label}.png"
 
-        # Build full output path
         import os
         output_path = os.path.join(OUT_DIR, filename)
         plt.savefig(output_path, dpi=DPI)
@@ -386,7 +542,7 @@ def print_statistics_summary(all_run_stats):
             method_stats[method_name]['analytical']['final_cost'].append(method_result['ana_final_cost'])
             method_stats[method_name]['analytical']['success'].append(method_result['ana_success'])
 
-    # Per-run best cost across all methods and gradient variants
+    # Per-run best cost
     n_runs = len(all_run_stats)
     per_run_best = []
     for run_stats in all_run_stats:
@@ -397,8 +553,7 @@ def print_statistics_summary(all_run_stats):
                 costs.append(r['num_final_cost'])
         per_run_best.append(min(costs))
 
-    # Count wins: how many runs each method/variant achieved the per-run best
-    # key: (method_name, 'num'|'ana')
+    # Count wins
     win_counts = {(m, v): 0
                   for m in method_stats
                   for v in (['ana'] if method_stats[m]['is_gradient_free'] else ['num', 'ana'])}
@@ -418,7 +573,6 @@ def print_statistics_summary(all_run_stats):
         print("-" * 100)
 
         if stats['is_gradient_free']:
-            # Gradient-free method
             iters = stats['analytical']['iterations']
             costs = stats['analytical']['final_cost']
             success_rate = 100 * sum(stats['analytical']['success']) / len(stats['analytical']['success'])
@@ -431,7 +585,6 @@ def print_statistics_summary(all_run_stats):
             print(f"  Success rate: {success_rate:.1f}%")
             print(f"  Times best: {wins}/{n_runs}")
         else:
-            # Gradient-based method - show both numerical and analytical
             print("  NUMERICAL gradients:")
             num_iters = stats['numerical']['iterations']
             num_costs = stats['numerical']['final_cost']
@@ -462,30 +615,34 @@ def print_statistics_summary(all_run_stats):
 
 
 def run_single_case(run_num):
-    """Run optimization for all methods on a single random spectrum.
-
-    Returns (run_stats, output_string).
-    """
+    """Run optimization for all methods on a single random N-D spectrum."""
     out = []
-    p = out.append  # shorthand
+    p = out.append
 
     p(f"\n{'='*100}")
     p(f"RUN {run_num}/{NUM_RUNS}")
     p(f"{'='*100}")
 
-    # Generate spectra for this run
-    E, T1, T2 = generate_random_spectra()
+    # Generate N spectra for this run
+    spectra = []
+    E, T1, T2 = generate_random_spectra()  # Generate first two
+    spectra.append(T1)
+    spectra.append(T2)
+
+    # Generate additional spectra if N > 2
+    for _ in range(N_SPECTRA - 2):
+        _, _, T_extra = generate_random_spectra()
+        spectra.append(T_extra)
 
     solver = DeconvSolver(
         empirical_spectrum=E,
-        theoretical_spectra=[T1, T2],
+        theoretical_spectra=spectra,
         distance=DISTANCE_METRIC,
         max_distance=MAX_DISTANCE,
         trash_cost=TRASH_COST,
         scale_factor=SCALE_FACTOR,
     )
 
-    # Report computed scale factor if auto-scaling is enabled
     if ENABLE_AUTO_SCALE:
         p(f"Auto-computed scale factor: {solver.scale_factor:.4e}")
     else:
@@ -493,161 +650,40 @@ def run_single_case(run_num):
 
     start_point = np.array(START_POINT)
 
-    # -----------------------------------------------------------------------
-    # Phase 1: build all tasks up-front, then dispatch in parallel
-    # -----------------------------------------------------------------------
-    # Set the module-level solver so forked child processes inherit it.
-    _es._solver = solver
+    # Find global optimum in N-D space
+    p(f"\nSearching for global optimum in {N_DIMS}-D space with {GLOBAL_SEARCH_STARTS} random starts...")
+    best_result = find_global_optimum(solver, BOUNDS, n_starts=GLOBAL_SEARCH_STARTS)
+    p(f"  Global optimum: {best_result.x}, cost={best_result.fun:.2f}")
 
-    grid_tasks, p1, p2 = build_grid_tasks(BOUNDS[0], BOUNDS[1], GRID_RESOLUTION)
-    global_tasks = build_global_search_tasks(BOUNDS, GLOBAL_SEARCH_STARTS)
-    optim_tasks = build_optim_tasks(METHODS, GRADIENT_FREE_METHODS, start_point, BOUNDS)
+    # Generate slice directions
+    slice_directions = generate_slice_directions(N_DIMS, N_PRINCIPAL_SLICES, N_RANDOM_SLICES,
+                                                 random_state=RANDOM_SEED)
+    p(f"\nGenerated {len(slice_directions)} slices ({N_PRINCIPAL_SLICES} principal + {N_RANDOM_SLICES} random)")
 
-    n_workers = _args.workers
-    # Don't open a nested Pool if we're already running inside one (outer run-level pool).
-    _in_subprocess = multiprocessing.current_process().name != 'MainProcess'
-
-    p(f"\nPhase 1: {len(grid_tasks)} grid rows, "
-      f"{len(global_tasks)} global-search starts, "
-      f"{len(optim_tasks)} optimisations")
-
-    if _in_subprocess or n_workers == 1:
-        p("  (serial — running inside worker process or workers=1)")
-        grid_raw   = [_compute_row(*t)      for t in grid_tasks]
-        global_raw = [_run_global_start(*t) for t in global_tasks]
-        optim_raw  = [_run_optim_task(*t)   for t in optim_tasks]
-    else:
-        p(f"  dispatching across {n_workers or multiprocessing.cpu_count()} workers...")
-        with multiprocessing.Pool(processes=n_workers) as pool:
-            grid_async   = pool.starmap_async(_compute_row,      grid_tasks)
-            global_async = pool.starmap_async(_run_global_start, global_tasks)
-            optim_async  = pool.starmap_async(_run_optim_task,   optim_tasks)
-            grid_raw   = grid_async.get()
-            global_raw = global_async.get()
-            optim_raw  = optim_async.get()
-
-    # -----------------------------------------------------------------------
-    # Phase 1 result assembly
-    # -----------------------------------------------------------------------
-    p("\nAssembling Phase 1 results...")
-
-    # Full grid
-    P1, P2, C, p1, p2, grad_p1_ana, grad_p2_ana = assemble_grid(
-        GRID_RESOLUTION, p1, p2, grid_raw
-    )
-    grad_p2_num, grad_p1_num = np.gradient(C, p2, p1)
-    min_idx = np.unravel_index(np.argmin(C), C.shape)
-    grid_results = [(P1[min_idx], P2[min_idx], C[min_idx])]
-
-    # Global optimum
-    best_result = reduce_global_results(global_raw)
-    p(f"  Global optimum: p1={best_result.x[0]:.2f}, p2={best_result.x[1]:.2f}, cost={best_result.fun:.2f}")
-
-    # Group optimisation results by method
-    # Each element of optim_raw: (method_name, use_numerical_grad, result, trajectory)
-    optim_by_method = {}
-    for mn, use_num, res, traj in optim_raw:
-        optim_by_method.setdefault(mn, {})
-        key = 'gf' if use_num is None else ('num' if use_num else 'ana')
-        optim_by_method[mn][key] = (res, traj)
-
-    # Prepare full grid data for plotting
-    full_data = {
-        'P1': P1, 'P2': P2, 'C': C,
-        'grad_p1_num': grad_p1_num, 'grad_p2_num': grad_p2_num,
-        'grad_p1_ana': grad_p1_ana, 'grad_p2_ana': grad_p2_ana,
-        'bounds': None
-    } if ENABLE_PLOTTING else None
-
-    # -----------------------------------------------------------------------
-    # Phase 3: build all zoom-grid row tasks and dispatch in parallel
-    # -----------------------------------------------------------------------
-    if ENABLE_PLOTTING:
-        # Compute zoom bounds for every (method × zoom_level) pair.
-        # Bounds depend only on result_ana.x which is already known.
-        zoom_meta = {}        # method_name -> list of (zoom, bounds_tuple, pz1, pz2)
-        zoom_tasks_flat = []  # (tag, row_i, p1_vals, p2_vals)  tag=(method_name, zoom_idx)
-
-        for _mn, _ in METHODS:
-            _is_gf = _mn in GRADIENT_FREE_METHODS
-            _res_ana = optim_by_method[_mn]['gf' if _is_gf else 'ana'][0]
-            _p1c, _p2c = _res_ana.x[0], _res_ana.x[1]
-            zoom_meta[_mn] = []
-
-            for _zi, _zoom in enumerate(ZOOM_LEVELS):
-                _zw = (p1[-1] - p1[0]) / _zoom
-                _p1_min = _p1c - _zw / 2;  _p1_max = _p1c + _zw / 2
-                _p2_min = _p2c - _zw / 2;  _p2_max = _p2c + _zw / 2
-
-                if _p1_min < BOUNDS[0][0]:   _p1_min = BOUNDS[0][0];  _p1_max = _p1_min + _zw
-                elif _p1_max > BOUNDS[0][1]: _p1_max = BOUNDS[0][1];  _p1_min = _p1_max - _zw
-                if _p2_min < BOUNDS[1][0]:   _p2_min = BOUNDS[1][0];  _p2_max = _p2_min + _zw
-                elif _p2_max > BOUNDS[1][1]: _p2_max = BOUNDS[1][1];  _p2_min = _p2_max - _zw
-
-                _row_tasks, _pz1, _pz2 = build_grid_tasks(
-                    (_p1_min, _p1_max), (_p2_min, _p2_max), GRID_RESOLUTION
-                )
-                zoom_meta[_mn].append((_zoom, (_p1_min, _p1_max, _p2_min, _p2_max), _pz1, _pz2))
-                _tag = (_mn, _zi)
-                for _ri, _pv1, _pv2 in _row_tasks:
-                    zoom_tasks_flat.append((_tag, _ri, _pv1, _pv2))
-
-        p(f"\nPhase 3: {len(zoom_tasks_flat)} zoom-grid row tasks "
-          f"({len(METHODS)} methods × {len(ZOOM_LEVELS)} zoom levels × {GRID_RESOLUTION} rows)")
-
-        if _in_subprocess or n_workers == 1:
-            zoom_raw = [_compute_tagged_row(*t) for t in zoom_tasks_flat]
-        else:
-            with multiprocessing.Pool(processes=n_workers) as pool:
-                zoom_raw = pool.starmap(_compute_tagged_row, zoom_tasks_flat)
-
-        # Phase 4: assemble zoom grids grouped by (method_name, zoom_idx)
-        _zoom_rows_grouped = {}
-        for _tag, _ri, _C, _gp1, _gp2 in zoom_raw:
-            _zoom_rows_grouped.setdefault(_tag, []).append((_ri, _C, _gp1, _gp2))
-
-        zoom_grids_by_method = {}
-        for _mn, _ in METHODS:
-            zoom_grids_by_method[_mn] = {'zoom_data_list': [], 'method_grid_results': [grid_results[0]]}
-            for _zi, (_zoom, _btup, _pz1, _pz2) in enumerate(zoom_meta[_mn]):
-                _tag = (_mn, _zi)
-                _P1z, _P2z, _Cz, _pz1, _pz2, _gp1z, _gp2z = assemble_grid(
-                    GRID_RESOLUTION, _pz1, _pz2, _zoom_rows_grouped[_tag]
-                )
-                _gp2nz, _gp1nz = np.gradient(_Cz, _pz2, _pz1)
-                _midz = np.unravel_index(np.argmin(_Cz), _Cz.shape)
-                zoom_grids_by_method[_mn]['method_grid_results'].append(
-                    (_P1z[_midz], _P2z[_midz], _Cz[_midz])
-                )
-                zoom_grids_by_method[_mn]['zoom_data_list'].append({
-                    'P1': _P1z, 'P2': _P2z, 'C': _Cz,
-                    'grad_p1_num': _gp1nz, 'grad_p2_num': _gp2nz,
-                    'grad_p1_ana': _gp1z, 'grad_p2_ana': _gp2z,
-                    'bounds': _btup,
-                })
-    else:
-        zoom_grids_by_method = {}
-
-    # Statistics for this run
     run_stats = []
 
-    # Loop over each optimization method (results already computed above)
+    # Loop over each optimization method
     for method_name, display_name in tqdm(METHODS, desc=f"Run {run_num}: Methods", leave=False):
         p(f"\n{'-'*100}")
         p(f"TESTING METHOD: {display_name} ({method_name})")
         p(f"{'-'*100}")
 
         is_gradient_free = method_name in GRADIENT_FREE_METHODS
-        method_results = optim_by_method[method_name]
 
         if is_gradient_free:
-            result_ana, trajectory_ana = method_results['gf']
-            result_num, trajectory_num = result_ana, trajectory_ana
+            p(f"\nRunning {display_name} (gradient-free) from starting point")
+            with tqdm(total=1, desc=f"  {method_name} optimization", leave=False) as pbar:
+                result_ana, trajectory_ana = run_optimization(
+                    solver, start_point, BOUNDS, method=method_name, use_numerical_grad=False
+                )
+                pbar.update(1)
 
-            p(f"\n{display_name} (gradient-free), start: p1={START_POINT[0]:.2f}, p2={START_POINT[1]:.2f}")
             p(f"  Converged: {result_ana.success}")
-            p(f"  Final point: p1={result_ana.x[0]:.2f}, p2={result_ana.x[1]:.2f}, cost={result_ana.fun:.2f}")
+            p(f"  Final point: {result_ana.x}, cost={result_ana.fun:.2f}")
             p(f"  Iterations: {len(trajectory_ana)}")
+
+            result_num = result_ana
+            trajectory_num = trajectory_ana
 
             run_stats.append({
                 'method': method_name,
@@ -661,17 +697,28 @@ def run_single_case(run_num):
             })
 
         else:
-            result_num, trajectory_num = method_results['num']
-            result_ana, trajectory_ana = method_results['ana']
+            # Run with numerical gradients
+            p(f"\nRunning {display_name} with NUMERICAL gradients")
+            with tqdm(total=1, desc=f"  {method_name} (numerical)", leave=False) as pbar:
+                result_num, trajectory_num = run_optimization(
+                    solver, start_point, BOUNDS, method=method_name, use_numerical_grad=True
+                )
+                pbar.update(1)
 
-            p(f"\n{display_name} NUMERICAL, start: p1={START_POINT[0]:.2f}, p2={START_POINT[1]:.2f}")
             p(f"  Converged: {result_num.success}")
-            p(f"  Final point: p1={result_num.x[0]:.2f}, p2={result_num.x[1]:.2f}, cost={result_num.fun:.2f}")
+            p(f"  Final point: {result_num.x}, cost={result_num.fun:.2f}")
             p(f"  Iterations: {len(trajectory_num)}")
 
-            p(f"\n{display_name} ANALYTICAL, start: p1={START_POINT[0]:.2f}, p2={START_POINT[1]:.2f}")
+            # Run with analytical gradients
+            p(f"\nRunning {display_name} with ANALYTICAL gradients")
+            with tqdm(total=1, desc=f"  {method_name} (analytical)", leave=False) as pbar:
+                result_ana, trajectory_ana = run_optimization(
+                    solver, start_point, BOUNDS, method=method_name, use_numerical_grad=False
+                )
+                pbar.update(1)
+
             p(f"  Converged: {result_ana.success}")
-            p(f"  Final point: p1={result_ana.x[0]:.2f}, p2={result_ana.x[1]:.2f}, cost={result_ana.fun:.2f}")
+            p(f"  Final point: {result_ana.x}, cost={result_ana.fun:.2f}")
             p(f"  Iterations: {len(trajectory_ana)}")
 
             run_stats.append({
@@ -685,18 +732,69 @@ def run_single_case(run_num):
                 'ana_success': result_ana.success
             })
 
-        # Create visualization using pre-computed zoom grids (Phase 3/4)
+        # Generate visualizations for each slice
         if ENABLE_PLOTTING:
-            _zgd = zoom_grids_by_method[method_name]
-            zoom_data_list = _zgd['zoom_data_list']
-            _best_gi = np.argmin([_c for _, _, _c in _zgd['method_grid_results']])
-            _op1, _op2, _oc = _zgd['method_grid_results'][_best_gi]
-            grid_optimum = (_op1, _op2, _oc)
+            for slice_info in tqdm(slice_directions, desc=f"  {method_name} slices", leave=False):
+                axis1_idx, axis2_idx, u, v, slice_label = slice_info
 
-            save_msg = create_visualization(solver, BOUNDS, full_data, zoom_data_list, ZOOM_LEVELS,
-                               result_num, trajectory_num, result_ana, trajectory_ana,
-                               best_result, grid_optimum, method_name, run_num)
-            p(save_msg)
+                # Determine bounds in 2D slice space
+                # Use a range that covers the original bounds projected onto the slice
+                max_range = max([b[1] - b[0] for b in BOUNDS])
+                bounds_2d = ((-max_range/2, max_range/2), (-max_range/2, max_range/2))
+
+                # Compute full grid for this slice
+                U, V, C, u_1d, v_1d, grad_u_ana, grad_v_ana = compute_cost_on_2d_slice(
+                    solver, best_result.x, u, v, bounds_2d, GRID_RESOLUTION
+                )
+                grad_v_num, grad_u_num = np.gradient(C, v_1d, u_1d)
+
+                # Find grid minimum
+                min_idx = np.unravel_index(np.argmin(C), C.shape)
+                grid_optimum = (U[min_idx], V[min_idx], C[min_idx])
+
+                full_data = {
+                    'U': U, 'V': V, 'C': C,
+                    'grad_u_num': grad_u_num, 'grad_v_num': grad_v_num,
+                    'grad_u_ana': grad_u_ana, 'grad_v_ana': grad_v_ana,
+                    'bounds': None,
+                    'grid_optimum': grid_optimum
+                }
+
+                # Compute zoom levels
+                zoom_data_list = []
+                for zoom in ZOOM_LEVELS:
+                    zoom_width = (u_1d[-1] - u_1d[0]) / zoom
+
+                    u_min = -zoom_width/2
+                    u_max = zoom_width/2
+                    v_min = -zoom_width/2
+                    v_max = zoom_width/2
+
+                    bounds_zoom = ((u_min, u_max), (v_min, v_max))
+
+                    U_z, V_z, C_z, u_1d_z, v_1d_z, grad_u_ana_z, grad_v_ana_z = compute_cost_on_2d_slice(
+                        solver, best_result.x, u, v, bounds_zoom, GRID_RESOLUTION
+                    )
+                    grad_v_num_z, grad_u_num_z = np.gradient(C_z, v_1d_z, u_1d_z)
+
+                    min_idx_zoom = np.unravel_index(np.argmin(C_z), C_z.shape)
+                    grid_optimum_zoom = (U_z[min_idx_zoom], V_z[min_idx_zoom], C_z[min_idx_zoom])
+
+                    zoom_data_list.append({
+                        'U': U_z, 'V': V_z, 'C': C_z,
+                        'grad_u_num': grad_u_num_z, 'grad_v_num': grad_v_num_z,
+                        'grad_u_ana': grad_u_ana_z, 'grad_v_ana': grad_v_ana_z,
+                        'bounds': (u_min, u_max, v_min, v_max),
+                        'grid_optimum': grid_optimum_zoom
+                    })
+
+                # Create visualization
+                save_msg = create_visualization_for_slice(
+                    solver, slice_info, full_data, zoom_data_list, ZOOM_LEVELS,
+                    result_num, trajectory_num, result_ana, trajectory_ana,
+                    best_result, method_name, run_num
+                )
+                p(save_msg)
 
     return run_num, run_stats, '\n'.join(out)
 
@@ -705,19 +803,23 @@ def main():
     """Main entry point."""
     import os
 
-    # Create output directory if it doesn't exist
+    # Create output directory
     if ENABLE_PLOTTING and OUT_DIR != '.':
         os.makedirs(OUT_DIR, exist_ok=True)
 
-    # Set random seed if provided
+    # Set random seed
     if RANDOM_SEED is not None:
         np.random.seed(RANDOM_SEED)
         print(f"Random seed set to: {RANDOM_SEED}")
 
     print("="*100)
-    print("COST MAP 2D - OPTIMIZATION COMPARISON")
+    print("COST MAP N-D - N-DIMENSIONAL OPTIMIZATION WITH 2D SLICES")
     print("="*100)
     print(f"Configuration:")
+    print(f"  Number of spectra (dimensions): {N_SPECTRA}")
+    print(f"  Principal axis slices: {N_PRINCIPAL_SLICES}")
+    print(f"  Random orientation slices: {N_RANDOM_SLICES}")
+    print(f"  Total slices per method: {N_PRINCIPAL_SLICES + N_RANDOM_SLICES}")
     print(f"  Plotting enabled: {ENABLE_PLOTTING}")
     print(f"  Number of runs: {NUM_RUNS}")
     print(f"  Methods to test: {len(METHODS)}")
@@ -730,16 +832,11 @@ def main():
     if ENABLE_PLOTTING:
         print(f"  Output directory: {os.path.abspath(OUT_DIR)}")
 
-    # Run all cases and collect statistics.
-    # Parallelism strategy:
-    #   NUM_RUNS > 1  → outer pool runs each case in a separate worker process;
-    #                   the inner grid/optim pool is disabled inside workers.
-    #   NUM_RUNS == 1 → single case runs in MainProcess; inner pool is active.
+    # Run all cases
     run_nums = list(range(1, NUM_RUNS + 1))
     if NUM_RUNS > 1 and _args.workers != 1:
-        n_workers = _args.workers  # None → Pool uses cpu_count()
-        print(f"  Workers: {n_workers or multiprocessing.cpu_count()} "
-              f"(run-level parallelism; inner grid/optim pool disabled per worker)")
+        n_workers = _args.workers
+        print(f"  Workers: {n_workers or multiprocessing.cpu_count()} (multiprocessing)")
         ordered_stats = {}
         with multiprocessing.Pool(processes=n_workers) as pool:
             for run_num, run_stats, output in tqdm(pool.imap_unordered(run_single_case, run_nums),
@@ -748,9 +845,6 @@ def main():
                 ordered_stats[run_num] = run_stats
         all_run_stats = [ordered_stats[n] for n in run_nums]
     else:
-        if _args.workers != 1:
-            print(f"  Workers: {_args.workers or multiprocessing.cpu_count()} "
-                  f"(inner grid/optim parallelism)")
         all_run_stats = []
         for _, run_stats, output in tqdm((run_single_case(n) for n in run_nums),
                                           total=NUM_RUNS, desc="Overall progress"):
