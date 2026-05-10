@@ -81,6 +81,23 @@ class Spectrum(Distribution):
             self.positions, self.original_intensities * factor, label=self.label
         )
 
+    def positions_intensities_scaled(self, scale_factor: float) -> "Spectrum":
+        """
+        Return a new Spectrum with both positions and intensities scaled by the given factor.
+
+        Parameters
+        ----------
+        scale_factor : float
+            The scaling factor to apply to positions and intensities.
+
+        Returns
+        -------
+        Spectrum
+            A new Spectrum object with scaled positions and intensities.
+        """
+        new_positions = self.positions.astype(np.float64, copy=False) * scale_factor
+        return Spectrum(new_positions, self.original_intensities * scale_factor, label=self.label)
+
     def normalized(self) -> "Spectrum":
         """
         Return a new Spectrum object with intensities normalized to sum to 1.
