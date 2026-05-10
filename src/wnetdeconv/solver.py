@@ -328,3 +328,58 @@ class ConstrainedSolver(DeconvSolver):
             constraints=constraint,
             options={'maxiter': 2000, 'ftol': 1e-14},
         )
+
+
+class MagnetsteinSolver(ConstrainedSolver):
+    """
+    ConstrainedSolver that normalizes all spectra to sum to 1 internally,
+    reproducing magnetstein's dual-LP problem formulation.
+
+    With unit-norm spectra the total-mass equality constraint reduces to
+    sum(w) = 1, matching the LP's implicit mass-balance condition.
+    experimental_trash_cost = MTD and theoretical_trash_cost = MTD_th
+    correspond directly to magnetstein's penalty and penalty_th parameters.
+
+    Parameters
+    ----------
+    empirical_spectrum : Distribution
+        The empirical spectrum (normalized internally to sum to 1).
+    theoretical_spectra : Sequence[Distribution]
+        A sequence of theoretical spectra (each normalized internally).
+    distance : DistanceMetric
+        Distance metric. Use DistanceMetric.L1 for 1D NMR spectra.
+    MTD : float
+        Maximum Transport Distance for the mix (experimental trash cost).
+    MTD_th : float, optional
+        Maximum Transport Distance for components (theoretical trash cost).
+        If None, uses symmetric trash with cost MTD.
+    method : str, optional
+        Min-cost flow algorithm (default: "network_simplex").
+    """
+
+    def __init__(
+        self,
+        empirical_spectrum: Distribution,
+        theoretical_spectra: Sequence[Distribution],
+        distance: DistanceMetric,
+        MTD: float,
+        MTD_th: Optional[float] = None,
+        method: str = "network_simplex",
+    ) -> None:
+        emp = empirical_spectrum.normalized()
+        theos = [t.normalized() for t in theoretical_spectra]
+        if MTD_th is None:
+            super().__init__(
+                emp, theos, distance,
+                max_distance=MTD,
+                trash_cost=MTD,
+                method=method,
+            )
+        else:
+            super().__init__(
+                emp, theos, distance,
+                max_distance=max(MTD, MTD_th),
+                experimental_trash_cost=MTD,
+                theoretical_trash_cost=MTD_th,
+                method=method,
+            )
