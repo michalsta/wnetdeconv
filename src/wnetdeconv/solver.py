@@ -87,19 +87,23 @@ class DeconvSolver:
                 "At least one of trash_cost, experimental_trash_cost, or theoretical_trash_cost must be provided."
             )
 
-        assert isinstance(empirical_spectrum, Distribution)
-        assert isinstance(theoretical_spectra, Sequence)
-        assert all(isinstance(t, Distribution) for t in theoretical_spectra)
-        assert isinstance(max_distance, (int, float))
+        if not isinstance(empirical_spectrum, Distribution):
+            raise TypeError("empirical_spectrum must be a Distribution")
+        if not isinstance(theoretical_spectra, Sequence):
+            raise TypeError("theoretical_spectra must be a Sequence")
+        if not all(isinstance(t, Distribution) for t in theoretical_spectra):
+            raise TypeError("all theoretical_spectra elements must be Distribution")
+        if not isinstance(max_distance, (int, float)):
+            raise TypeError("max_distance must be a number")
         for name, val in [
             ("trash_cost", trash_cost),
             ("experimental_trash_cost", experimental_trash_cost),
             ("theoretical_trash_cost", theoretical_trash_cost),
         ]:
-            assert val is None or isinstance(
-                val, (int, float)
-            ), f"{name} must be a number"
-        assert scale_factor is None or isinstance(scale_factor, (int, float))
+            if val is not None and not isinstance(val, (int, float)):
+                raise TypeError(f"{name} must be a number")
+        if scale_factor is not None and not isinstance(scale_factor, (int, float)):
+            raise TypeError("scale_factor must be a number")
 
         asymmetric = (
             experimental_trash_cost is not None or theoretical_trash_cost is not None
