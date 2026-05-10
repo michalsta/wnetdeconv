@@ -78,21 +78,43 @@ class DeconvSolver:
         method: str = "network_simplex",
     ) -> None:
 
-        if trash_cost is None and experimental_trash_cost is None and theoretical_trash_cost is None:
-            raise ValueError("At least one of trash_cost, experimental_trash_cost, or theoretical_trash_cost must be provided.")
+        if (
+            trash_cost is None
+            and experimental_trash_cost is None
+            and theoretical_trash_cost is None
+        ):
+            raise ValueError(
+                "At least one of trash_cost, experimental_trash_cost, or theoretical_trash_cost must be provided."
+            )
 
         assert isinstance(empirical_spectrum, Distribution)
         assert isinstance(theoretical_spectra, Sequence)
         assert all(isinstance(t, Distribution) for t in theoretical_spectra)
         assert isinstance(max_distance, (int, float))
-        for name, val in [("trash_cost", trash_cost), ("experimental_trash_cost", experimental_trash_cost), ("theoretical_trash_cost", theoretical_trash_cost)]:
-            assert val is None or isinstance(val, (int, float)), f"{name} must be a number"
+        for name, val in [
+            ("trash_cost", trash_cost),
+            ("experimental_trash_cost", experimental_trash_cost),
+            ("theoretical_trash_cost", theoretical_trash_cost),
+        ]:
+            assert val is None or isinstance(
+                val, (int, float)
+            ), f"{name} must be a number"
         assert scale_factor is None or isinstance(scale_factor, (int, float))
 
-        asymmetric = experimental_trash_cost is not None or theoretical_trash_cost is not None
+        asymmetric = (
+            experimental_trash_cost is not None or theoretical_trash_cost is not None
+        )
         if asymmetric:
-            eff_exp  = experimental_trash_cost if experimental_trash_cost is not None else trash_cost
-            eff_theo = theoretical_trash_cost  if theoretical_trash_cost  is not None else trash_cost
+            eff_exp = (
+                experimental_trash_cost
+                if experimental_trash_cost is not None
+                else trash_cost
+            )
+            eff_theo = (
+                theoretical_trash_cost
+                if theoretical_trash_cost is not None
+                else trash_cost
+            )
             active_costs = [c for c in (eff_exp, eff_theo) if c is not None]
         else:
             active_costs = [trash_cost]
@@ -110,14 +132,20 @@ class DeconvSolver:
             # trash edges pay trash_cost * sf per unit of flow.  Total cost is at most
             # max_cost_per_unit_flow * max_sum_intensity * sf^2, which must stay < 2^60.
             max_cost_per_unit_flow = max([max_distance] + active_costs)
-            scale_factor = np.sqrt(ALMOST_MAXINT / (max_sum_intensity * max_cost_per_unit_flow))
+            scale_factor = np.sqrt(
+                ALMOST_MAXINT / (max_sum_intensity * max_cost_per_unit_flow)
+            )
             assert (
                 scale_factor > 0
             ), "Can't auto-compute a sensible scale factor. You might have some luck with setting it manually, but it probably means something about your data or trash_cost is off."
 
         self.scale_factor = scale_factor
-        self.empirical_spectrum = empirical_spectrum.positions_intensities_scaled(scale_factor)
-        self.theoretical_spectra = [t.positions_intensities_scaled(scale_factor) for t in theoretical_spectra]
+        self.empirical_spectrum = empirical_spectrum.positions_intensities_scaled(
+            scale_factor
+        )
+        self.theoretical_spectra = [
+            t.positions_intensities_scaled(scale_factor) for t in theoretical_spectra
+        ]
 
         self.graph = WassersteinNetwork(
             self.empirical_spectrum,
@@ -207,7 +235,9 @@ class DeconvSolver:
             Array of partial derivatives, one per theoretical spectrum.
         """
         derivs = self.graph.spectrum_proportion_derivatives()
-        result = np.array([derivs.get(i, 0) for i in range(len(self.theoretical_spectra))])
+        result = np.array(
+            [derivs.get(i, 0) for i in range(len(self.theoretical_spectra))]
+        )
         return result / self.scale_factor / self.scale_factor
 
     def no_subgraphs(self) -> int:
@@ -287,7 +317,9 @@ class ConstrainedSolver(DeconvSolver):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._emp_total = self.empirical_spectrum.sum_intensities
-        self._theo_totals = np.array([t.sum_intensities for t in self.theoretical_spectra])
+        self._theo_totals = np.array(
+            [t.sum_intensities for t in self.theoretical_spectra]
+        )
 
     def optimize(self, x0: Optional[np.ndarray] = None) -> OptimizeResult:
         """
@@ -314,19 +346,19 @@ class ConstrainedSolver(DeconvSolver):
             return self.total_cost(), self.gradient()
 
         constraint = {
-            'type': 'eq',
-            'fun': lambda w: np.dot(w, self._theo_totals) - self._emp_total,
-            'jac': lambda w: self._theo_totals,
+            "type": "eq",
+            "fun": lambda w: np.dot(w, self._theo_totals) - self._emp_total,
+            "jac": lambda w: self._theo_totals,
         }
 
         return minimize(
             cost_and_grad,
             x0=x0,
             jac=True,
-            method='SLSQP',
+            method="SLSQP",
             bounds=[(0.0, None)] * n,
             constraints=constraint,
-            options={'maxiter': 2000, 'ftol': 1e-14},
+            options={"maxiter": 2000, "ftol": 1e-14},
         )
 
 
@@ -370,14 +402,18 @@ class MagnetsteinSolver(ConstrainedSolver):
         theos = [t.normalized() for t in theoretical_spectra]
         if MTD_th is None:
             super().__init__(
-                emp, theos, distance,
+                emp,
+                theos,
+                distance,
                 max_distance=MTD,
                 trash_cost=MTD,
                 method=method,
             )
         else:
             super().__init__(
-                emp, theos, distance,
+                emp,
+                theos,
+                distance,
                 max_distance=max(MTD, MTD_th),
                 experimental_trash_cost=MTD,
                 theoretical_trash_cost=MTD_th,

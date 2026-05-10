@@ -1,4 +1,5 @@
 """Shared support functions for deconvolution experiments."""
+
 import numpy as np
 from scipy.optimize import minimize
 from tqdm import tqdm
@@ -24,8 +25,12 @@ def generate_random_spectra():
     T2 = Spectrum_1D(pos_T2.tolist(), int_T2.tolist())
 
     print(f"Generated E with {n_peaks_E} peaks")
-    print(f"Generated T1 with {n_peaks_T1} peaks, range [{pos_T1[0]:.1f}, {pos_T1[-1]:.1f}]")
-    print(f"Generated T2 with {n_peaks_T2} peaks, range [{pos_T2[0]:.1f}, {pos_T2[-1]:.1f}]")
+    print(
+        f"Generated T1 with {n_peaks_T1} peaks, range [{pos_T1[0]:.1f}, {pos_T1[-1]:.1f}]"
+    )
+    print(
+        f"Generated T2 with {n_peaks_T2} peaks, range [{pos_T2[0]:.1f}, {pos_T2[-1]:.1f}]"
+    )
 
     return E, T1, T2
 
@@ -50,7 +55,9 @@ def compute_cost_grid(solver, p1_range, p2_range, n_points):
     return P1, P2, C, p1, p2, Grad_p1_analytical, Grad_p2_analytical
 
 
-def run_optimization(solver, start_point, bounds, method='L-BFGS-B', use_numerical_grad=False):
+def run_optimization(
+    solver, start_point, bounds, method="L-BFGS-B", use_numerical_grad=False
+):
     """Run optimization and return trajectory.
 
     Args:
@@ -74,30 +81,22 @@ def run_optimization(solver, start_point, bounds, method='L-BFGS-B', use_numeric
         return np.array(solver.gradient())
 
     # Configure options based on method
-    options = {'disp': False, 'maxiter': 200}
+    options = {"disp": False, "maxiter": 200}
 
     # Gradient-free methods
-    gradient_free_methods = ['Nelder-Mead', 'Powell', 'COBYLA']
+    gradient_free_methods = ["Nelder-Mead", "Powell", "COBYLA"]
 
     if method in gradient_free_methods:
         # Gradient-free methods don't use gradients
         result = minimize(
-            cost_function,
-            start_point,
-            method=method,
-            bounds=bounds,
-            options=options
+            cost_function, start_point, method=method, bounds=bounds, options=options
         )
     elif use_numerical_grad:
         # Use numerical gradients (automatic finite differences)
         # Use a larger epsilon for finite differences since cost function is discrete
-        options['eps'] = 1e-2
+        options["eps"] = 1e-2
         result = minimize(
-            cost_function,
-            start_point,
-            method=method,
-            bounds=bounds,
-            options=options
+            cost_function, start_point, method=method, bounds=bounds, options=options
         )
     else:
         # Use analytical gradients
@@ -107,7 +106,7 @@ def run_optimization(solver, start_point, bounds, method='L-BFGS-B', use_numeric
             method=method,
             jac=grad_function,
             bounds=bounds,
-            options=options
+            options=options,
         )
 
     return result, np.array(trajectory)
@@ -118,10 +117,12 @@ def find_global_optimum(solver, bounds, n_starts=20):
     best_result = None
 
     for i in tqdm(range(n_starts), desc="    Global search starts", leave=False):
-        random_start = np.array([
-            np.random.uniform(bounds[0][0], bounds[0][1]),
-            np.random.uniform(bounds[1][0], bounds[1][1])
-        ])
+        random_start = np.array(
+            [
+                np.random.uniform(bounds[0][0], bounds[0][1]),
+                np.random.uniform(bounds[1][0], bounds[1][1]),
+            ]
+        )
 
         def temp_cost(point):
             solver.set_point(point)
@@ -133,9 +134,12 @@ def find_global_optimum(solver, bounds, n_starts=20):
 
         try:
             temp_result = minimize(
-                temp_cost, random_start, method='L-BFGS-B',
-                jac=temp_grad, bounds=bounds,
-                options={'disp': False, 'maxiter': 100}
+                temp_cost,
+                random_start,
+                method="L-BFGS-B",
+                jac=temp_grad,
+                bounds=bounds,
+                options={"disp": False, "maxiter": 100},
             )
             if best_result is None or temp_result.fun < best_result.fun:
                 best_result = temp_result

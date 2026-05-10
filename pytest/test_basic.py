@@ -10,15 +10,9 @@ def test_basic():
         [10, 20, 30],
     )
 
-    T1 = Spectrum_1D(
-        [1, 2],
-        [2, 2]
-    )
+    T1 = Spectrum_1D([1, 2], [2, 2])
 
-    T2 = Spectrum_1D(
-        [2, 3],
-        [1,3]
-    )
+    T2 = Spectrum_1D([2, 3], [1, 3])
 
     solver = DeconvSolver(
         empirical_spectrum=E,
@@ -30,8 +24,7 @@ def test_basic():
 
     solver.set_point([1.0, 1.0])
     print(solver.gradient())
-    
+
 
 if __name__ == "__main__":
     test_basic()
-

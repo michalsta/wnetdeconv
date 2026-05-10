@@ -1,4 +1,5 @@
 """Test whether the optimization basin is convex across multiple dimensions."""
+
 import numpy as np
 from scipy.optimize import minimize
 from wnetdeconv import DeconvSolver, Spectrum_1D
@@ -28,10 +29,9 @@ def find_global_optimum(solver, bounds, n_starts=20):
     best_result = None
 
     for i in range(n_starts):
-        random_start = np.array([
-            np.random.uniform(bounds[j][0], bounds[j][1])
-            for j in range(len(bounds))
-        ])
+        random_start = np.array(
+            [np.random.uniform(bounds[j][0], bounds[j][1]) for j in range(len(bounds))]
+        )
 
         def temp_cost(point):
             solver.set_point(point)
@@ -43,9 +43,12 @@ def find_global_optimum(solver, bounds, n_starts=20):
 
         try:
             temp_result = minimize(
-                temp_cost, random_start, method='L-BFGS-B',
-                jac=temp_grad, bounds=bounds,
-                options={'disp': False, 'maxiter': 100}
+                temp_cost,
+                random_start,
+                method="L-BFGS-B",
+                jac=temp_grad,
+                bounds=bounds,
+                options={"disp": False, "maxiter": 100},
             )
             if best_result is None or temp_result.fun < best_result.fun:
                 best_result = temp_result
@@ -175,7 +178,9 @@ def test_dimension(n_dim, n_cases=10):
     print(f"\n{'-'*80}")
     print(f"Summary for {n_dim}D:")
     print(f"  Total segments tested: {total_tests}")
-    print(f"  Convex: {total_convex}/{total_tests} ({100*total_convex/total_tests:.1f}%)")
+    print(
+        f"  Convex: {total_convex}/{total_tests} ({100*total_convex/total_tests:.1f}%)"
+    )
     print(f"  Non-convex violations: {total_violations}")
     print(f"  Max relative violation: {max_rel_violation_seen:.2e}")
 
@@ -183,9 +188,9 @@ def test_dimension(n_dim, n_cases=10):
 
 
 def main():
-    print("="*80)
+    print("=" * 80)
     print("CONVEXITY ANALYSIS ACROSS DIMENSIONS")
-    print("="*80)
+    print("=" * 80)
 
     # Test dimensions from 2 to 10
     dimensions = [2, 3, 4, 5, 7, 10]
@@ -194,30 +199,40 @@ def main():
     all_results = []
 
     for n_dim in dimensions:
-        total, convex, violations, max_viol = test_dimension(n_dim, n_cases=n_cases_per_dim)
-        all_results.append({
-            'dim': n_dim,
-            'total': total,
-            'convex': convex,
-            'violations': violations,
-            'max_viol': max_viol
-        })
+        total, convex, violations, max_viol = test_dimension(
+            n_dim, n_cases=n_cases_per_dim
+        )
+        all_results.append(
+            {
+                "dim": n_dim,
+                "total": total,
+                "convex": convex,
+                "violations": violations,
+                "max_viol": max_viol,
+            }
+        )
 
     # Overall summary
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("OVERALL SUMMARY")
-    print("="*80)
-    print(f"{'Dim':<6} {'Tests':<8} {'Convex':<10} {'Rate':<10} {'Violations':<12} {'Max Rel Viol':<15}")
-    print("-"*80)
+    print("=" * 80)
+    print(
+        f"{'Dim':<6} {'Tests':<8} {'Convex':<10} {'Rate':<10} {'Violations':<12} {'Max Rel Viol':<15}"
+    )
+    print("-" * 80)
     for r in all_results:
-        rate = 100 * r['convex'] / r['total']
-        print(f"{r['dim']:<6} {r['total']:<8} {r['convex']:<10} {rate:>6.1f}%    {r['violations']:<12} {r['max_viol']:<15.2e}")
+        rate = 100 * r["convex"] / r["total"]
+        print(
+            f"{r['dim']:<6} {r['total']:<8} {r['convex']:<10} {rate:>6.1f}%    {r['violations']:<12} {r['max_viol']:<15.2e}"
+        )
 
-    grand_total = sum(r['total'] for r in all_results)
-    grand_convex = sum(r['convex'] for r in all_results)
-    grand_violations = sum(r['violations'] for r in all_results)
-    print("-"*80)
-    print(f"{'TOTAL':<6} {grand_total:<8} {grand_convex:<10} {100*grand_convex/grand_total:>6.1f}%    {grand_violations:<12}")
+    grand_total = sum(r["total"] for r in all_results)
+    grand_convex = sum(r["convex"] for r in all_results)
+    grand_violations = sum(r["violations"] for r in all_results)
+    print("-" * 80)
+    print(
+        f"{'TOTAL':<6} {grand_total:<8} {grand_convex:<10} {100*grand_convex/grand_total:>6.1f}%    {grand_violations:<12}"
+    )
 
 
 if __name__ == "__main__":
