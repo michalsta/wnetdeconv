@@ -34,7 +34,11 @@ class DeconvSolver:
     theoretical_trash_cost : int or float, optional
         Cost for discarding unmatched theoretical peaks. Enables asymmetric trash mode.
     method : str, optional
-        Min-cost flow algorithm: "network_simplex" (default), "cycle_canceling", "cost_scaling", or "capacity_scaling".
+        Min-cost flow algorithm: ``"network_simplex"`` (default), ``"cycle_canceling"``, ``"cost_scaling"``, or ``"capacity_scaling"``.
+        Ignored when ``solver`` is provided.
+    solver : NetworkSimplex | CostScaling | CycleCanceling | CapacityScaling, optional
+        Solver configuration object.  Takes precedence over ``method``.
+        Defaults to ``NetworkSimplex()`` (warm restarts, BLOCK_SEARCH pivot).
 
     Attributes
     ----------
@@ -75,7 +79,8 @@ class DeconvSolver:
         scale_factor: Optional[Union[int, float]] = None,
         experimental_trash_cost: Optional[Union[int, float]] = None,
         theoretical_trash_cost: Optional[Union[int, float]] = None,
-        method: str = "network_simplex",
+        method: str = None,
+        solver=None,
     ) -> None:
 
         if (
@@ -157,6 +162,7 @@ class DeconvSolver:
             distance,
             int(max_distance * scale_factor),
             method=method,
+            solver=solver,
         )
         if asymmetric:
             if eff_exp is not None:
@@ -390,7 +396,9 @@ class MagnetsteinSolver(ConstrainedSolver):
         Maximum Transport Distance for components (theoretical trash cost).
         If None, uses symmetric trash with cost MTD.
     method : str, optional
-        Min-cost flow algorithm (default: "network_simplex").
+        Min-cost flow algorithm (default: ``"network_simplex"``). Ignored when ``solver`` is provided.
+    solver : NetworkSimplex | CostScaling | CycleCanceling | CapacityScaling, optional
+        Solver configuration object.  Takes precedence over ``method``.
     """
 
     def __init__(
@@ -400,7 +408,8 @@ class MagnetsteinSolver(ConstrainedSolver):
         distance: DistanceMetric,
         MTD: float,
         MTD_th: Optional[float] = None,
-        method: str = "network_simplex",
+        method: str = None,
+        solver=None,
     ) -> None:
         emp = empirical_spectrum.normalized()
         theos = [t.normalized() for t in theoretical_spectra]
@@ -412,6 +421,7 @@ class MagnetsteinSolver(ConstrainedSolver):
                 max_distance=MTD,
                 trash_cost=MTD,
                 method=method,
+                solver=solver,
             )
         else:
             super().__init__(
@@ -422,4 +432,5 @@ class MagnetsteinSolver(ConstrainedSolver):
                 experimental_trash_cost=MTD,
                 theoretical_trash_cost=MTD_th,
                 method=method,
+                solver=solver,
             )
