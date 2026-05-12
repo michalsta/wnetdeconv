@@ -25,7 +25,7 @@ classifiers = [
 
 [project.optional-dependencies]
 extras = ["pyopenms"]
-pytest = ["pytest", "pandas", "numpy"]
+pytest = ["pytest", "pandas", "numpy", "scipy"]
 
 [tool.pytest.ini_options]
 testpaths = ["pytest"]
