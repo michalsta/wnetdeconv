@@ -250,6 +250,36 @@ class DeconvSolver:
         )
         return result / self.scale_factor / self.scale_factor
 
+    def optimize(self, x0: Optional[np.ndarray] = None) -> OptimizeResult:
+        """
+        Minimize total transport cost over non-negative spectrum proportions.
+
+        Parameters
+        ----------
+        x0 : np.ndarray, optional
+            Initial proportions. Defaults to a vector of ones.
+
+        Returns
+        -------
+        scipy.optimize.OptimizeResult
+            Standard scipy result; .x holds the optimal proportions.
+        """
+        n = len(self.theoretical_spectra)
+        if x0 is None:
+            x0 = np.ones(n)
+
+        def cost_and_grad(w):
+            self.set_point(w)
+            return self.total_cost(), self.gradient()
+
+        return minimize(
+            cost_and_grad,
+            x0=x0,
+            jac=True,
+            method="L-BFGS-B",
+            bounds=[(0.0, None)] * n,
+        )
+
     def no_subgraphs(self) -> int:
         """
         Returns the number of subgraphs in the underlying Wasserstein network.
