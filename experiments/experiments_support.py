@@ -35,8 +35,12 @@ def generate_random_spectra():
     return E, T1, T2
 
 
-def compute_cost_grid(solver, p1_range, p2_range, n_points):
-    """Compute cost values and analytical gradients on a grid."""
+def compute_cost_grid(solver, p1_range, p2_range, n_points, verbose=True):
+    """Compute cost values and analytical gradients on a grid.
+    
+    Args:
+        verbose: If False, suppress tqdm progress bar (useful in worker processes)
+    """
     p1 = np.linspace(p1_range[0], p1_range[1], n_points)
     p2 = np.linspace(p2_range[0], p2_range[1], n_points)
     P1, P2 = np.meshgrid(p1, p2)
@@ -44,7 +48,11 @@ def compute_cost_grid(solver, p1_range, p2_range, n_points):
     Grad_p1_analytical = np.empty_like(P1)
     Grad_p2_analytical = np.empty_like(P1)
 
-    for i in tqdm(range(n_points), desc="    Computing grid", leave=False):
+    iterator = range(n_points)
+    if verbose:
+        iterator = tqdm(iterator, desc="    Computing grid", leave=False)
+    
+    for i in iterator:
         for j in range(n_points):
             solver.set_point([P1[i, j], P2[i, j]])
             C[i, j] = solver.total_cost()
@@ -81,7 +89,14 @@ def run_optimization(
         return np.array(solver.gradient())
 
     # Configure options based on method
-    options = {"disp": False, "maxiter": 200}
+    # Different methods use different option names for iteration limits
+    options = {"disp": False}
+    
+    # Set max iterations using the correct option name for each method
+    if method == "TNC":
+        options["maxfun"] = 200  # TNC uses maxfun, not maxiter
+    else:
+        options["maxiter"] = 200  # Most methods use maxiter
 
     # Gradient-free methods
     gradient_free_methods = ["Nelder-Mead", "Powell", "COBYLA"]
@@ -112,11 +127,19 @@ def run_optimization(
     return result, np.array(trajectory)
 
 
-def find_global_optimum(solver, bounds, n_starts=20):
-    """Find global optimum using multiple random starts."""
+def find_global_optimum(solver, bounds, n_starts=20, verbose=True):
+    """Find global optimum using multiple random starts.
+    
+    Args:
+        verbose: If False, suppress tqdm progress bar (useful in worker processes)
+    """
     best_result = None
 
-    for i in tqdm(range(n_starts), desc="    Global search starts", leave=False):
+    iterator = range(n_starts)
+    if verbose:
+        iterator = tqdm(iterator, desc="    Global search starts", leave=False)
+    
+    for i in iterator:
         random_start = np.array(
             [
                 np.random.uniform(bounds[0][0], bounds[0][1]),
