@@ -13,6 +13,19 @@ from experiments_support import (
     find_global_optimum,
 )
 
+# Force fork method for multiprocessing (required for global variable inheritance)
+multiprocessing.set_start_method("fork", force=True)
+
+# ============================================================================
+# GLOBAL VARIABLES FOR PARALLEL PROCESSING (inherited via fork)
+# ============================================================================
+
+_solver = None
+_start_point = None
+_bounds = None
+_p1_range = None
+_p2_range = None
+
 # ============================================================================
 # ARGUMENT PARSING
 # ============================================================================
@@ -225,6 +238,92 @@ RANDOM_SEED = _args.random_seed
 
 # Output directory
 OUT_DIR = _args.out_dir
+
+# ============================================================================
+# PARALLEL WORKER FUNCTIONS (access globals via fork inheritance)
+# ============================================================================
+
+
+def _run_optimization_task(args):
+    """Worker function to run optimization for a method.
+
+    Args:
+        args: Tuple of (method_name, display_name, use_numerical_grad)
+
+    Returns:
+        Tuple of (method_name, use_numerical_grad, result, trajectory)
+    """
+    method_name, display_name, use_numerical_grad = args
+    result, trajectory = run_optimization(
+        _solver,
+        _start_point,
+        _bounds,
+        method=method_name,
+        use_numerical_grad=use_numerical_grad,
+    )
+    return (method_name, use_numerical_grad, result, trajectory)
+
+
+def _compute_zoom_grid_task(args):
+    """Worker function to compute a zoom grid.
+
+    Args:
+        args: Tuple of (method_name, zoom_level, center_p1, center_p2)
+
+    Returns:
+        Tuple of (method_name, zoom_level, grid_data_dict)
+    """
+    method_name, zoom, center_p1, center_p2 = args
+
+    # Calculate zoom bounds
+    zoom_width = (_p1_range[1] - _p1_range[0]) / zoom
+
+    # Center on provided center point
+    p1_min = center_p1 - zoom_width / 2
+    p1_max = center_p1 + zoom_width / 2
+    p2_min = center_p2 - zoom_width / 2
+    p2_max = center_p2 + zoom_width / 2
+
+    # Shift if hitting boundaries, maintaining width
+    if p1_min < _bounds[0][0]:
+        p1_min = _bounds[0][0]
+        p1_max = p1_min + zoom_width
+    elif p1_max > _bounds[0][1]:
+        p1_max = _bounds[0][1]
+        p1_min = p1_max - zoom_width
+
+    if p2_min < _bounds[1][0]:
+        p2_min = _bounds[1][0]
+        p2_max = p2_min + zoom_width
+    elif p2_max > _bounds[1][1]:
+        p2_max = _bounds[1][1]
+        p2_min = p2_max - zoom_width
+
+    # Compute grid
+    P1_z, P2_z, C_z, p1_z, p2_z, grad_p1_ana_z, grad_p2_ana_z = compute_cost_grid(
+        _solver, (p1_min, p1_max), (p2_min, p2_max), GRID_RESOLUTION
+    )
+    grad_p2_num_z, grad_p1_num_z = np.gradient(C_z, p2_z, p1_z)
+
+    # Track grid minimum
+    min_idx_zoom = np.unravel_index(np.argmin(C_z), C_z.shape)
+    grid_min = (P1_z[min_idx_zoom], P2_z[min_idx_zoom], C_z[min_idx_zoom])
+
+    grid_data = {
+        "zoom": zoom,
+        "P1": P1_z,
+        "P2": P2_z,
+        "C": C_z,
+        "grad_p1_num": grad_p1_num_z,
+        "grad_p2_num": grad_p2_num_z,
+        "grad_p1_ana": grad_p1_ana_z,
+        "grad_p2_ana": grad_p2_ana_z,
+        "bounds": (p1_min, p1_max, p2_min, p2_max),
+        "grid_min": grid_min,
+    }
+
+    return (method_name, zoom, grid_data)
+
 
 # ============================================================================
 # PLOTTING FUNCTIONS (only used if ENABLE_PLOTTING=True)
@@ -766,6 +865,8 @@ def run_single_case(run_num):
 
     Returns (run_stats, output_string).
     """
+    global _solver, _start_point, _bounds, _p1_range, _p2_range
+
     out = []
     p = out.append  # shorthand
 
@@ -776,7 +877,7 @@ def run_single_case(run_num):
     # Generate spectra for this run
     E, T1, T2 = generate_random_spectra()
 
-    solver = DeconvSolver(
+    _solver = DeconvSolver(
         empirical_spectrum=E,
         theoretical_spectra=[T1, T2],
         distance=DISTANCE_METRIC,
@@ -787,28 +888,34 @@ def run_single_case(run_num):
 
     # Report computed scale factor if auto-scaling is enabled
     if ENABLE_AUTO_SCALE:
-        p(f"Auto-computed scale factor: {solver.scale_factor:.4e}")
+        p(f"Auto-computed scale factor: {_solver.scale_factor:.4e}")
     else:
-        p(f"Using manual scale factor: {solver.scale_factor:.4e}")
+        p(f"Using manual scale factor: {_solver.scale_factor:.4e}")
+
+    # Set up for worker processes (will be inherited via fork)
+    _start_point = np.array(START_POINT)
+    _bounds = BOUNDS
 
     # Compute full grid (shared across all methods for this run)
     if ENABLE_PLOTTING:
         p("\nComputing full grid...")
     P1, P2, C, p1, p2, grad_p1_ana, grad_p2_ana = compute_cost_grid(
-        solver, BOUNDS[0], BOUNDS[1], GRID_RESOLUTION
+        _solver, BOUNDS[0], BOUNDS[1], GRID_RESOLUTION
     )
     grad_p2_num, grad_p1_num = np.gradient(C, p2, p1)
+
+    # Store p1/p2 ranges for zoom calculations (will be inherited via fork)
+    _p1_range = (p1[0], p1[-1])
+    _p2_range = (p2[0], p2[-1])
 
     # Store grid results
     min_idx = np.unravel_index(np.argmin(C), C.shape)
     grid_results = [(P1[min_idx], P2[min_idx], C[min_idx])]
 
-    start_point = np.array(START_POINT)
-
     # Find global optimum (shared across all methods for this run)
     if ENABLE_PLOTTING:
         p("\nSearching for actual global optimum with multiple random starts...")
-    best_result = find_global_optimum(solver, BOUNDS, n_starts=GLOBAL_SEARCH_STARTS)
+    best_result = find_global_optimum(_solver, _bounds, n_starts=GLOBAL_SEARCH_STARTS)
     p(
         f"  Global optimum: p1={best_result.x[0]:.2f}, p2={best_result.x[1]:.2f}, cost={best_result.fun:.2f}"
     )
@@ -829,36 +936,98 @@ def run_single_case(run_num):
         else None
     )
 
-    # Statistics for this run
+    # ========================================================================
+    # STEP 1: Run all optimizations in parallel
+    # ========================================================================
+    p(f"\nRunning optimizations in parallel...")
+
+    opt_tasks = []
+    for method_name, display_name in METHODS:
+        is_gradient_free = method_name in GRADIENT_FREE_METHODS
+        if not is_gradient_free:
+            # Gradient-based: run both numerical and analytical
+            opt_tasks.append((method_name, display_name, True))  # numerical
+            opt_tasks.append((method_name, display_name, False))  # analytical
+        else:
+            # Gradient-free: run only once (analytical)
+            opt_tasks.append((method_name, display_name, False))
+
+    # Run optimizations in parallel (globals inherited via fork)
+    n_workers = _args.workers if hasattr(_args, "workers") else None
+    with multiprocessing.Pool(processes=n_workers) as pool:
+        opt_results = list(
+            tqdm(
+                pool.imap(_run_optimization_task, opt_tasks),
+                total=len(opt_tasks),
+                desc=f"Run {run_num}: Optimizations",
+                leave=False,
+            )
+        )
+
+    # Organize optimization results by method
+    opt_results_dict = (
+        {}
+    )  # {method_name: {'num': (result, traj), 'ana': (result, traj)}}
+    for method_name, use_numerical_grad, result, trajectory in opt_results:
+        if method_name not in opt_results_dict:
+            opt_results_dict[method_name] = {}
+        key = "num" if use_numerical_grad else "ana"
+        opt_results_dict[method_name][key] = (result, trajectory)
+
+    # ========================================================================
+    # STEP 2: Compute all zoom grids in parallel
+    # ========================================================================
+    if ENABLE_PLOTTING:
+        p(f"\nComputing zoom grids in parallel...")
+
+        zoom_tasks = []
+        for method_name, display_name in METHODS:
+            # Get analytical result for this method (for centering zoom)
+            result_ana, _ = opt_results_dict[method_name]["ana"]
+            center_p1 = result_ana.x[0]
+            center_p2 = result_ana.x[1]
+
+            # Create tasks for all zoom levels
+            for zoom in ZOOM_LEVELS:
+                zoom_tasks.append((method_name, zoom, center_p1, center_p2))
+
+        # Compute zoom grids in parallel (globals inherited via fork)
+        with multiprocessing.Pool(processes=n_workers) as pool:
+            zoom_results = list(
+                tqdm(
+                    pool.imap(_compute_zoom_grid_task, zoom_tasks),
+                    total=len(zoom_tasks),
+                    desc=f"Run {run_num}: Zoom grids",
+                    leave=False,
+                )
+            )
+
+        # Organize zoom results by method
+        zoom_results_dict = {}  # {method_name: {zoom_level: grid_data}}
+        for method_name, zoom, grid_data in zoom_results:
+            if method_name not in zoom_results_dict:
+                zoom_results_dict[method_name] = {}
+            zoom_results_dict[method_name][zoom] = grid_data
+
+    # ========================================================================
+    # STEP 3: Gather statistics and create visualizations
+    # ========================================================================
     run_stats = []
 
-    # Loop over each optimization method
-    for method_name, display_name in tqdm(
-        METHODS, desc=f"Run {run_num}: Methods", leave=False
-    ):
+    for method_name, display_name in METHODS:
         p(f"\n{'-'*100}")
         p(f"TESTING METHOD: {display_name} ({method_name})")
         p(f"{'-'*100}")
 
         is_gradient_free = method_name in GRADIENT_FREE_METHODS
 
-        if is_gradient_free:
-            # For gradient-free methods, run once and use same trajectory for both columns
-            p(
-                f"\nRunning {display_name} (gradient-free) from starting point: p1={START_POINT[0]:.2f}, p2={START_POINT[1]:.2f}"
-            )
-            with tqdm(
-                total=1, desc=f"  {method_name} optimization", leave=False
-            ) as pbar:
-                result_ana, trajectory_ana = run_optimization(
-                    solver,
-                    start_point,
-                    BOUNDS,
-                    method=method_name,
-                    use_numerical_grad=False,
-                )
-                pbar.update(1)
+        # Get optimization results
+        result_ana, trajectory_ana = opt_results_dict[method_name]["ana"]
 
+        if is_gradient_free:
+            p(
+                f"\nCompleted {display_name} (gradient-free) from starting point: p1={START_POINT[0]:.2f}, p2={START_POINT[1]:.2f}"
+            )
             p(f"  Converged: {result_ana.success}")
             p(
                 f"  Final point: p1={result_ana.x[0]:.2f}, p2={result_ana.x[1]:.2f}, cost={result_ana.fun:.2f}"
@@ -882,46 +1051,21 @@ def run_single_case(run_num):
                     "num_success": None,
                 }
             )
-
         else:
-            # Run optimization with numerical gradients
-            p(
-                f"\nRunning {display_name} with NUMERICAL gradients from starting point: p1={START_POINT[0]:.2f}, p2={START_POINT[1]:.2f}"
-            )
-            with tqdm(
-                total=1, desc=f"  {method_name} (numerical)", leave=False
-            ) as pbar:
-                result_num, trajectory_num = run_optimization(
-                    solver,
-                    start_point,
-                    BOUNDS,
-                    method=method_name,
-                    use_numerical_grad=True,
-                )
-                pbar.update(1)
+            result_num, trajectory_num = opt_results_dict[method_name]["num"]
 
+            p(
+                f"\nCompleted {display_name} with NUMERICAL gradients from starting point: p1={START_POINT[0]:.2f}, p2={START_POINT[1]:.2f}"
+            )
             p(f"  Converged: {result_num.success}")
             p(
                 f"  Final point: p1={result_num.x[0]:.2f}, p2={result_num.x[1]:.2f}, cost={result_num.fun:.2f}"
             )
             p(f"  Iterations: {len(trajectory_num)}")
 
-            # Run optimization with analytical gradients
             p(
-                f"\nRunning {display_name} with ANALYTICAL gradients from starting point: p1={START_POINT[0]:.2f}, p2={START_POINT[1]:.2f}"
+                f"\nCompleted {display_name} with ANALYTICAL gradients from starting point: p1={START_POINT[0]:.2f}, p2={START_POINT[1]:.2f}"
             )
-            with tqdm(
-                total=1, desc=f"  {method_name} (analytical)", leave=False
-            ) as pbar:
-                result_ana, trajectory_ana = run_optimization(
-                    solver,
-                    start_point,
-                    BOUNDS,
-                    method=method_name,
-                    use_numerical_grad=False,
-                )
-                pbar.update(1)
-
             p(f"  Converged: {result_ana.success}")
             p(
                 f"  Final point: p1={result_ana.x[0]:.2f}, p2={result_ana.x[1]:.2f}, cost={result_ana.fun:.2f}"
@@ -942,66 +1086,16 @@ def run_single_case(run_num):
                 }
             )
 
-        # Compute zoom grids and create visualization if plotting enabled
+        # Create visualization if plotting enabled
         if ENABLE_PLOTTING:
+            # Gather zoom data for this method
             zoom_data_list = []
             method_grid_results = [grid_results[0]]  # Include base grid result
 
-            for zoom in tqdm(
-                ZOOM_LEVELS, desc=f"  {method_name} zoom levels", leave=False
-            ):
-                zoom_width = (p1[-1] - p1[0]) / zoom
-
-                # Center on analytical optimum
-                p1_center = result_ana.x[0]
-                p2_center = result_ana.x[1]
-
-                # Calculate initial bounds
-                p1_min = p1_center - zoom_width / 2
-                p1_max = p1_center + zoom_width / 2
-                p2_min = p2_center - zoom_width / 2
-                p2_max = p2_center + zoom_width / 2
-
-                # Shift if hitting boundaries, maintaining width
-                if p1_min < BOUNDS[0][0]:
-                    p1_min = BOUNDS[0][0]
-                    p1_max = p1_min + zoom_width
-                elif p1_max > BOUNDS[0][1]:
-                    p1_max = BOUNDS[0][1]
-                    p1_min = p1_max - zoom_width
-
-                if p2_min < BOUNDS[1][0]:
-                    p2_min = BOUNDS[1][0]
-                    p2_max = p2_min + zoom_width
-                elif p2_max > BOUNDS[1][1]:
-                    p2_max = BOUNDS[1][1]
-                    p2_min = p2_max - zoom_width
-
-                P1_z, P2_z, C_z, p1_z, p2_z, grad_p1_ana_z, grad_p2_ana_z = (
-                    compute_cost_grid(
-                        solver, (p1_min, p1_max), (p2_min, p2_max), GRID_RESOLUTION
-                    )
-                )
-                grad_p2_num_z, grad_p1_num_z = np.gradient(C_z, p2_z, p1_z)
-
-                # Track grid minimum
-                min_idx_zoom = np.unravel_index(np.argmin(C_z), C_z.shape)
-                method_grid_results.append(
-                    (P1_z[min_idx_zoom], P2_z[min_idx_zoom], C_z[min_idx_zoom])
-                )
-
-                zoom_data_list.append(
-                    {
-                        "P1": P1_z,
-                        "P2": P2_z,
-                        "C": C_z,
-                        "grad_p1_num": grad_p1_num_z,
-                        "grad_p2_num": grad_p2_num_z,
-                        "grad_p1_ana": grad_p1_ana_z,
-                        "grad_p2_ana": grad_p2_ana_z,
-                        "bounds": (p1_min, p1_max, p2_min, p2_max),
-                    }
-                )
+            for zoom in ZOOM_LEVELS:
+                grid_data = zoom_results_dict[method_name][zoom]
+                zoom_data_list.append(grid_data)
+                method_grid_results.append(grid_data["grid_min"])
 
             # Find best grid minimum for this method
             best_grid_idx = np.argmin([cost for _, _, cost in method_grid_results])
@@ -1010,8 +1104,8 @@ def run_single_case(run_num):
 
             # Create visualization for this method
             save_msg = create_visualization(
-                solver,
-                BOUNDS,
+                _solver,
+                _bounds,
                 full_data,
                 zoom_data_list,
                 ZOOM_LEVELS,
