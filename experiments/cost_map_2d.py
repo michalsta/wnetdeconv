@@ -61,9 +61,10 @@ def _build_parser():
         "--start-point",
         nargs="+",
         type=float,
-        default=[15.0],
+        default=None,
         metavar="P",
-        help="Starting point values: provide 1 value (broadcast to all dims) or N values",
+        help="Starting point values: provide 1 value (broadcast to all dims) or N values. "
+        "Default: [1/N] with --hemoglobin (N=10), [15.0] otherwise",
     )
     parser.add_argument(
         "--bounds",
@@ -307,7 +308,7 @@ if USE_HEMOGLOBIN:
     trash_cost_value = 0.1
     enable_auto_scale_value = False
     scale_factor_value = 1e4
-    # Use hemoglobin default bounds if user didn't explicitly set them
+    # Use hemoglobin defaults if user didn't explicitly set them
     if _args.bounds is None:
         _args.bounds = [0, 1]
 
@@ -321,6 +322,13 @@ if USE_HEMOGLOBIN:
     N_THEORETICAL = 10
 else:
     N_THEORETICAL = _args.n_theoretical
+
+# Set default start point if not specified (must be after N_THEORETICAL is determined)
+if _args.start_point is None:
+    if USE_HEMOGLOBIN:
+        _args.start_point = [1.0 / N_THEORETICAL]
+    else:
+        _args.start_point = [15.0]
 
 AXIS_PAIRS = _get_axis_pairs(N_THEORETICAL)
 
