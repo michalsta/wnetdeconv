@@ -1245,32 +1245,21 @@ def _create_plot_task(args):
     """Worker function to create a single plot for one method in one run.
 
     Args:
-        args: Tuple of (run_num, method_name, dim_pair, opt_results, zoom_results)
+        args: Tuple of (run_num, method_name, dim_pair, opt_results_dict, zoom_results_dict)
+              opt_results_dict: {'num': (result, traj), 'ana': (result, traj)}
+              zoom_results_dict: {zoom_level: grid_data}
 
     Returns:
         Tuple of (run_num, method_name, dim_pair, output_path)
     """
-    run_num, method_name, dim_pair, opt_results, zoom_results = args
+    run_num, method_name, dim_pair, opt_results_dict, zoom_results_dict = args
+
+    import gc
+    gc.collect()  # Clean up memory before plotting
+    gc.collect(2)  # Aggressive collection to free up memory
 
     solver = _solvers[run_num]
     best_result = _global_optima.get(run_num)
-
-    # Organize optimization results
-    opt_results_dict = {}
-    for r_num, mname, use_numerical_grad, result, trajectory in opt_results:
-        if r_num != run_num or mname != method_name:
-            continue
-        key = "num" if use_numerical_grad else "ana"
-        opt_results_dict[key] = (result, trajectory)
-
-    # Organize zoom results
-    zoom_results_dict = {}
-    for r_num, mname, result_dim_pair, zoom, grid_data in zoom_results:
-        if r_num != run_num or mname != method_name:
-            continue
-        if result_dim_pair != dim_pair:
-            continue
-        zoom_results_dict[zoom] = grid_data
 
     # Get results
     result_ana, trajectory_ana = opt_results_dict["ana"]
@@ -1637,6 +1626,21 @@ def main():
     plot_messages = {}
 
     if ENABLE_PLOTTING:
+        # Pre-build lookup dicts so each task receives only its own data
+        opt_lookup = {}  # {(run_num, method_name): {'num': ..., 'ana': ...}}
+        for r_num, mname, use_numerical_grad, result, trajectory in all_opt_results:
+            key = (r_num, mname)
+            if key not in opt_lookup:
+                opt_lookup[key] = {}
+            opt_lookup[key]["num" if use_numerical_grad else "ana"] = (result, trajectory)
+
+        zoom_lookup = {}  # {(run_num, method_name, dim_pair): {zoom: grid_data}}
+        for r_num, mname, result_dim_pair, zoom, grid_data in all_zoom_results:
+            key = (r_num, mname, result_dim_pair)
+            if key not in zoom_lookup:
+                zoom_lookup[key] = {}
+            zoom_lookup[key][zoom] = grid_data
+
         # Create plotting tasks for all run/method/dim_pair combinations
         plot_tasks = []
         for run_num in run_nums:
