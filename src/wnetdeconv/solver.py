@@ -303,6 +303,11 @@ class DeconvSolver:
         - Number of subgraphs
         - Number of empirical nodes
         - Number of theoretical nodes
+        - Number of matching edges (dense factory)
+        - Number of chain edges (1D chain factory)
+        - Number of src-to-empirical edges
+        - Number of theoretical-to-sink edges
+        - Number of simple trash edges
         - Matching density
         - Scale factor (and its log10 value)
         - Total cost
@@ -318,6 +323,11 @@ class DeconvSolver:
         print("No subgraphs:", self.graph.no_subgraphs())
         print("No empirical nodes:", self.graph.count_empirical_nodes())
         print("No theoretical nodes:", self.graph.count_theoretical_nodes())
+        print("No matching edges:", self.graph.count_matching_edges())
+        print("No chain edges:", self.graph.count_chain_edges())
+        print("No src-to-empirical edges:", self.graph.count_src_to_empirical_edges())
+        print("No theoretical-to-sink edges:", self.graph.count_theoretical_to_sink_edges())
+        print("No simple trash edges:", self.graph.count_simple_trash_edges())
         print("Matching density:", self.graph.matching_density())
         print(
             "Scale factor:", self.scale_factor, f" log10: {np.log10(self.scale_factor)}"
@@ -330,6 +340,11 @@ class DeconvSolver:
             print("Subgraph", ii, ":")
             print("  No. empirical nodes:", s.count_empirical_nodes())
             print("  No. theoretical nodes:", s.count_theoretical_nodes())
+            print("  No. matching edges:", s.count_matching_edges())
+            print("  No. chain edges:", s.count_chain_edges())
+            print("  No. src-to-empirical edges:", s.count_src_to_empirical_edges())
+            print("  No. theoretical-to-sink edges:", s.count_theoretical_to_sink_edges())
+            print("  No. simple trash edges:", s.count_simple_trash_edges())
             print("  Cost:", s.total_cost())
             print("  Matching density:", s.matching_density())
             print("  Theoretical spectra involved:", s.theoretical_spectra_involved())
