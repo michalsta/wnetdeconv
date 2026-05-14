@@ -9,6 +9,7 @@ from wnetdeconv import DeconvSolver
 from wnet.distances import DistanceMetric
 from experiments_support import (
     generate_random_spectra,
+    load_hemoglobin_benchmark_spectra,
     compute_cost_grid,
     compute_cost_grid_axis_pair_slice,
     run_optimization,
@@ -68,9 +69,10 @@ def _build_parser():
         "--bounds",
         nargs="+",
         type=float,
-        default=[0, 25],
+        default=None,
         metavar="B",
-        help="Bounds values: provide 2 values (min max, broadcast to all dims) or 2*N values",
+        help="Bounds values: provide 2 values (min max, broadcast to all dims) or 2*N values. "
+        "Default: [0, 1] with --hemoglobin, [0, 25] otherwise",
     )
     parser.add_argument(
         "--max-iterations",
@@ -130,7 +132,7 @@ def _build_parser():
     # Deconvolution solver parameters
     parser.add_argument(
         "--distance-metric",
-        choices=["L1", "L2"],
+        choices=["L1", "L2", "LINF"],
         default="L2",
         help="Distance metric for the deconvolution solver",
     )
@@ -180,6 +182,18 @@ def _build_parser():
         default=None,
         metavar="SEED",
         help="Random seed for reproducibility (default: None, use random seed)",
+    )
+    parser.add_argument(
+        "--hemoglobin",
+        action="store_true",
+        help="Use masserstein hemoglobin benchmark spectra and solver parameters instead of random spectra",
+    )
+    parser.add_argument(
+        "--hemoglobin-iso-coverage",
+        type=float,
+        default=0.99,
+        metavar="P",
+        help="Total isotope probability coverage used for hemoglobin theoretical spectra",
     )
     parser.add_argument(
         "--n-peaks-empirical",
@@ -268,6 +282,7 @@ def _get_axis_pairs(n_dims):
     """Return all axis-aligned dimension pairs (i, j) with i < j."""
     return [(i, j) for i in range(n_dims) for j in range(i + 1, n_dims)]
 
+
 # ============================================================================
 # CONFIGURATION CONSTANTS
 # ============================================================================
@@ -275,9 +290,38 @@ def _get_axis_pairs(n_dims):
 # Control flags
 ENABLE_PLOTTING = not _args.no_plot
 NUM_RUNS = _args.num_runs
+USE_HEMOGLOBIN = _args.hemoglobin
+HEMOGLOBIN_ISO_COVERAGE = _args.hemoglobin_iso_coverage
 
-# Problem size
-N_THEORETICAL = _args.n_theoretical
+# Solver parameter defaults can be overridden by benchmark modes.
+distance_metric_name = _args.distance_metric
+max_distance_value = _args.max_distance
+trash_cost_value = _args.trash_cost
+enable_auto_scale_value = _args.auto_scale
+scale_factor_value = None if enable_auto_scale_value else _args.scale_factor
+
+if USE_HEMOGLOBIN:
+    # Match masserstein hemoglobin benchmark defaults.
+    distance_metric_name = "LINF"
+    max_distance_value = 0.025
+    trash_cost_value = 0.1
+    enable_auto_scale_value = False
+    scale_factor_value = 1e4
+    # Use hemoglobin default bounds if user didn't explicitly set them
+    if _args.bounds is None:
+        _args.bounds = [0, 1]
+
+# Set default bounds if not specified
+if _args.bounds is None:
+    _args.bounds = [0, 25]
+
+# Determine number of dimensions.
+if USE_HEMOGLOBIN:
+    # Hemoglobin benchmark uses 10 theoretical spectra (fixed charge-state set).
+    N_THEORETICAL = 10
+else:
+    N_THEORETICAL = _args.n_theoretical
+
 AXIS_PAIRS = _get_axis_pairs(N_THEORETICAL)
 
 # Peak count configuration (supports deprecated two-spectrum flags)
@@ -288,12 +332,16 @@ if _args.n_peaks_theoretical_1 is not None or _args.n_peaks_theoretical_2 is not
             "Deprecated --n-peaks-theoretical-1/2 flags can only be used with --n-theoretical 2"
         )
     THEORETICAL_PEAK_COUNTS = [
-        _args.n_peaks_theoretical_1
-        if _args.n_peaks_theoretical_1 is not None
-        else N_PEAKS_THEORETICAL,
-        _args.n_peaks_theoretical_2
-        if _args.n_peaks_theoretical_2 is not None
-        else N_PEAKS_THEORETICAL,
+        (
+            _args.n_peaks_theoretical_1
+            if _args.n_peaks_theoretical_1 is not None
+            else N_PEAKS_THEORETICAL
+        ),
+        (
+            _args.n_peaks_theoretical_2
+            if _args.n_peaks_theoretical_2 is not None
+            else N_PEAKS_THEORETICAL
+        ),
     ]
 else:
     THEORETICAL_PEAK_COUNTS = [N_PEAKS_THEORETICAL] * N_THEORETICAL
@@ -329,11 +377,11 @@ METHODS = [
 GRADIENT_FREE_METHODS = ["Nelder-Mead", "Powell", "COBYLA"]
 
 # Deconvolution solver parameters
-DISTANCE_METRIC = DistanceMetric[_args.distance_metric]
-MAX_DISTANCE = _args.max_distance
-TRASH_COST = _args.trash_cost
-ENABLE_AUTO_SCALE = _args.auto_scale
-SCALE_FACTOR = None if ENABLE_AUTO_SCALE else _args.scale_factor
+DISTANCE_METRIC = DistanceMetric[distance_metric_name]
+MAX_DISTANCE = max_distance_value
+TRASH_COST = trash_cost_value
+ENABLE_AUTO_SCALE = enable_auto_scale_value
+SCALE_FACTOR = scale_factor_value
 
 # Random seed
 RANDOM_SEED = _args.random_seed
@@ -769,7 +817,8 @@ def plot_zoom_row(
     axes[1].set_xlabel(x_label)
     axes[1].set_ylabel(y_label)
     axes[1].set_title(
-        f"Gradient Numerical + Numerical Walk ({pair_tag}, zoom {zoom_label})", fontsize=9
+        f"Gradient Numerical + Numerical Walk ({pair_tag}, zoom {zoom_label})",
+        fontsize=9,
     )
     axes[1].set_aspect("equal")
     axes[1].legend(loc="best", fontsize=6)
@@ -828,7 +877,8 @@ def plot_zoom_row(
     axes[3].set_xlabel(x_label)
     axes[3].set_ylabel(y_label)
     axes[3].set_title(
-        f"Gradient Analytical + Analytical Walk ({pair_tag}, zoom {zoom_label})", fontsize=9
+        f"Gradient Analytical + Analytical Walk ({pair_tag}, zoom {zoom_label})",
+        fontsize=9,
     )
     axes[3].set_aspect("equal")
     axes[3].legend(loc="best", fontsize=6)
@@ -1113,13 +1163,24 @@ def _initialize_run_data(run_nums):
     print("=" * 100)
 
     for run_num in tqdm(run_nums, desc="Generating run data"):
-        # Generate spectra
-        E, theoretical_spectra = generate_random_spectra(
-            n_peaks_E=N_PEAKS_EMPIRICAL,
-            n_theoretical=N_THEORETICAL,
-            n_peaks_theoretical=N_PEAKS_THEORETICAL,
-            theoretical_peak_counts=THEORETICAL_PEAK_COUNTS,
-        )
+        if USE_HEMOGLOBIN:
+            E, theoretical_spectra, hemo_params = load_hemoglobin_benchmark_spectra(
+                iso_coverage=HEMOGLOBIN_ISO_COVERAGE
+            )
+            print(
+                f"  Run {run_num}: Loaded hemoglobin benchmark with {len(theoretical_spectra)} theoretical spectra"
+            )
+            # Sanity check: constants should already be configured to benchmark defaults.
+            if DISTANCE_METRIC.name != hemo_params["distance_metric"]:
+                raise RuntimeError("Hemoglobin distance metric override mismatch")
+        else:
+            # Generate random spectra
+            E, theoretical_spectra = generate_random_spectra(
+                n_peaks_E=N_PEAKS_EMPIRICAL,
+                n_theoretical=N_THEORETICAL,
+                n_peaks_theoretical=N_PEAKS_THEORETICAL,
+                theoretical_peak_counts=THEORETICAL_PEAK_COUNTS,
+            )
 
         # Create solver
         solver = DeconvSolver(
@@ -1130,7 +1191,7 @@ def _initialize_run_data(run_nums):
             trash_cost=TRASH_COST,
             scale_factor=SCALE_FACTOR,
         )
-        
+
         # Print solver diagnostics
         print(f"  Run {run_num}: Solver created")
         print(f"    Distance metric: {DISTANCE_METRIC}")
@@ -1140,19 +1201,19 @@ def _initialize_run_data(run_nums):
             print(f"    Auto scale factor: {solver.scale_factor:.4e}")
         else:
             print(f"    Manual scale factor: {SCALE_FACTOR:.4e}")
-        
+
         # Print network diagnostics
         try:
             # Set a point first so diagnostics can access graph info
             solver.set_point(START_POINT)
-            
-            if hasattr(solver, 'print_diagnostics'):
+
+            if hasattr(solver, "print_diagnostics"):
                 print(f"    === Solver Diagnostics ===")
                 solver.print_diagnostics(subgraphs_too=True)
-            
-            if hasattr(solver, 'graph'):
+
+            if hasattr(solver, "graph"):
                 graph = solver.graph  # It's a property, not a method
-                if hasattr(graph, 'print_diagnostics'):
+                if hasattr(graph, "print_diagnostics"):
                     print(f"    === Graph Diagnostics ===")
                     graph.print_diagnostics()
         except Exception as e:
@@ -1275,7 +1336,10 @@ def _create_plot_task(args):
     )
 
     # Include projection diagnostics in saved message for traceability.
-    if trajectory_num_plane_distance.size > 0 and trajectory_ana_plane_distance.size > 0:
+    if (
+        trajectory_num_plane_distance.size > 0
+        and trajectory_ana_plane_distance.size > 0
+    ):
         save_msg += (
             " "
             f"(proj dist num mean={np.mean(trajectory_num_plane_distance):.3f}, "
@@ -1315,7 +1379,9 @@ def _process_run_results(run_num, opt_results, zoom_results, plot_messages):
     # Report global optimum if available
     if ENABLE_PLOTTING and run_num in _global_optima:
         best_result = _global_optima[run_num]
-        p(f"  Global optimum: {_format_point(best_result.x)}, cost={best_result.fun:.2f}")
+        p(
+            f"  Global optimum: {_format_point(best_result.x)}, cost={best_result.fun:.2f}"
+        )
     else:
         best_result = None
 
@@ -1349,7 +1415,9 @@ def _process_run_results(run_num, opt_results, zoom_results, plot_messages):
                 f"\nCompleted {display_name} (gradient-free) from starting point: {_format_point(START_POINT)}"
             )
             p(f"  Converged: {result_ana.success}")
-            p(f"  Final point: {_format_point(result_ana.x)}, cost={result_ana.fun:.2f}")
+            p(
+                f"  Final point: {_format_point(result_ana.x)}, cost={result_ana.fun:.2f}"
+            )
             p(f"  Iterations: {len(trajectory_ana)}")
 
             # Use same result for both columns (for plotting only)
@@ -1376,14 +1444,18 @@ def _process_run_results(run_num, opt_results, zoom_results, plot_messages):
                 f"\nCompleted {display_name} with NUMERICAL gradients from starting point: {_format_point(START_POINT)}"
             )
             p(f"  Converged: {result_num.success}")
-            p(f"  Final point: {_format_point(result_num.x)}, cost={result_num.fun:.2f}")
+            p(
+                f"  Final point: {_format_point(result_num.x)}, cost={result_num.fun:.2f}"
+            )
             p(f"  Iterations: {len(trajectory_num)}")
 
             p(
                 f"\nCompleted {display_name} with ANALYTICAL gradients from starting point: {_format_point(START_POINT)}"
             )
             p(f"  Converged: {result_ana.success}")
-            p(f"  Final point: {_format_point(result_ana.x)}, cost={result_ana.fun:.2f}")
+            p(
+                f"  Final point: {_format_point(result_ana.x)}, cost={result_ana.fun:.2f}"
+            )
             p(f"  Iterations: {len(trajectory_ana)}")
 
             # Record statistics
@@ -1428,10 +1500,16 @@ def main():
     print("=" * 100)
     print(f"Configuration:")
     print(f"  Plotting enabled: {ENABLE_PLOTTING}")
+    print(
+        f"  Dataset mode: {'hemoglobin (masserstein)' if USE_HEMOGLOBIN else 'random'}"
+    )
     print(f"  Number of runs: {NUM_RUNS}")
     print(f"  Number of theoretical spectra: {N_THEORETICAL}")
     print(f"  Axis pairs: {len(AXIS_PAIRS)}")
-    print(f"  Theoretical peak counts: {THEORETICAL_PEAK_COUNTS}")
+    if not USE_HEMOGLOBIN:
+        print(f"  Theoretical peak counts: {THEORETICAL_PEAK_COUNTS}")
+    else:
+        print(f"  Hemoglobin iso coverage: {HEMOGLOBIN_ISO_COVERAGE}")
     print(f"  Methods to test: {len(METHODS)}")
     print(f"  Grid resolution: {GRID_RESOLUTION}")
     print(f"  Zoom levels: {ZOOM_LEVELS}")
@@ -1557,7 +1635,13 @@ def main():
             for method_name, _ in METHODS:
                 for dim_pair in AXIS_PAIRS:
                     plot_tasks.append(
-                        (run_num, method_name, dim_pair, all_opt_results, all_zoom_results)
+                        (
+                            run_num,
+                            method_name,
+                            dim_pair,
+                            all_opt_results,
+                            all_zoom_results,
+                        )
                     )
 
         # Execute plots in parallel

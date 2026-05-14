@@ -56,6 +56,87 @@ def generate_random_spectra(
     return E, theoretical_spectra
 
 
+def load_hemoglobin_benchmark_spectra(iso_coverage=0.99):
+    """Load the hemoglobin/myoglobin benchmark using masserstein simulation.
+
+    Returns:
+        empirical: Spectrum_1D centroided experimental spectrum
+        theoretical_spectra: list[Spectrum_1D] of simulated theoretical spectra
+        params: dict with recommended solver parameters
+    """
+    from masserstein import Spectrum as MasserSpectrum, peptides
+
+    myoglobin = (
+        "GLSDGEWQLVLNVWGKVEADIPGHGQEVLIRLFKGHPETLEKFDKFKHLKSEDEMKASE"
+        "DLKKHGATVLTALGGILKKKGHHEAEIKPLAQSHATKHKIPVKYLEFISECIIQVLQSKH"
+        "PGDFGADAQGAMNKALELFRKDMASNYKELGFQG"
+    )
+    haemoglobin_b = (
+        "VHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLSTPDAVMGNPK"
+        "VKAHGKKVLGAFSDGLAHLDNLKGTFATLSELHCDKLHVDPENFRLLGNVLVCVLAHHFG"
+        "KEFTPPVQAAYQKVVAGVANALAHKYH"
+    )
+    haemoglobin_a = (
+        "VLSPADKTNVKAAWGKVGAHAGEYGAEALERMFLSFPTTKTYFPHFDLSHGSAQVKGHG"
+        "KKVADALTNAVAHVDDMPNALSALSDLHAHKLRVDPVNFKLLSHCLLVTLAAHLPAEFTP"
+        "AVHASLDKFLASVSTVLTSKYR"
+    )
+
+    def make_spec(formula, charge, label):
+        return MasserSpectrum(
+            formula, charge=charge, adduct="H", total_prob=iso_coverage, label=label
+        )
+
+    def masser_to_wnet(s):
+        mzs = np.array([mz for mz, _ in s.confs])
+        ints = np.array([i for _, i in s.confs])
+        return Spectrum_1D(mzs, ints, label=s.label)
+
+    h_a_formula = peptides.get_protein_formula(haemoglobin_a)
+    h_b_formula = peptides.get_protein_formula(haemoglobin_b)
+    m_formula = peptides.get_protein_formula(myoglobin)
+
+    masser_spectra = [
+        make_spec(h_a_formula, 19, "hA 19+"),
+        make_spec(h_a_formula, 20, "hA 20+"),
+        make_spec(h_a_formula, 21, "hA 21+"),
+        make_spec(h_b_formula, 20, "hB 20+"),
+        make_spec(h_b_formula, 21, "hB 21+"),
+        make_spec(h_b_formula, 22, "hB 22+"),
+        make_spec(m_formula, 21, "myo 21+"),
+        make_spec(m_formula, 22, "myo 22+"),
+        make_spec(m_formula, 23, "myo 23+"),
+        make_spec(m_formula, 24, "myo 24+"),
+    ]
+    masser_spectra.sort(key=lambda s: s.confs[0][0])
+    for s in masser_spectra:
+        s.normalize()
+
+    proportions_raw = [1, 2, 1.2, 0.5, 0.9, 0.6, 0.2, 0.3, 0.4, 0.0]
+    proportions = [p / sum(proportions_raw) for p in proportions_raw]
+
+    convolved = MasserSpectrum(label="Convolved")
+    for s, p in zip(masser_spectra, proportions):
+        convolved += s * p
+    convolved.add_chemical_noise(100, 0.1)
+    convolved.add_gaussian_noise(0.01)
+
+    peaks, _ = convolved.centroid(peak_height_fraction=0.5, max_width=0.03)
+    centroided = MasserSpectrum(confs=peaks, label="Centroided")
+    centroided.normalize()
+
+    theoretical_spectra = [masser_to_wnet(s) for s in masser_spectra]
+    empirical = masser_to_wnet(centroided)
+
+    params = {
+        "distance_metric": "LINF",
+        "max_distance": 0.025,
+        "trash_cost": 0.1,
+        "scale_factor": 1e4,
+    }
+    return empirical, theoretical_spectra, params
+
+
 def compute_cost_grid(solver, p1_range, p2_range, n_points, verbose=True):
     """Compute cost values and analytical gradients on a grid.
 
