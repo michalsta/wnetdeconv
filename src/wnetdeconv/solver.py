@@ -5,6 +5,8 @@ import numpy as np
 from scipy.optimize import minimize, OptimizeResult
 
 from wnet import Distribution, WassersteinNetwork
+
+_Flow = namedtuple("Flow", ["empirical_peak_idx", "theoretical_peak_idx", "flow"])
 from wnet.distances import DistanceMetric
 
 
@@ -208,7 +210,7 @@ class DeconvSolver:
         """
         print(str(self.graph))
 
-    def flows(self) -> list[namedtuple]:
+    def flows(self) -> list[_Flow]:
         """
         Computes and returns a list of flow information for each theoretical spectrum.
 
@@ -227,11 +229,7 @@ class DeconvSolver:
             empirical_peak_idx, theoretical_peak_idx, flow = (
                 self.graph.flows_for_target(i)
             )
-            result.append(
-                namedtuple(
-                    "Flow", ["empirical_peak_idx", "theoretical_peak_idx", "flow"]
-                )(empirical_peak_idx, theoretical_peak_idx, flow / self.scale_factor)
-            )
+            result.append(_Flow(empirical_peak_idx, theoretical_peak_idx, flow / self.scale_factor))
         return result
 
     def gradient(self) -> np.ndarray:
