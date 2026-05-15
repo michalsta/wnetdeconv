@@ -912,8 +912,6 @@ def plot_zoom_row(
 
 
 def create_visualization(
-    solver,
-    bounds,
     full_data,
     zoom_data_list,
     zoom_levels,
@@ -1245,21 +1243,19 @@ def _create_plot_task(args):
     """Worker function to create a single plot for one method in one run.
 
     Args:
-        args: Tuple of (run_num, method_name, dim_pair, opt_results_dict, zoom_results_dict)
+        args: Tuple of (run_num, method_name, dim_pair, opt_results_dict, zoom_results_dict,
+                        best_result)
               opt_results_dict: {'num': (result, traj), 'ana': (result, traj)}
               zoom_results_dict: {zoom_level: grid_data}
 
     Returns:
         Tuple of (run_num, method_name, dim_pair, output_path)
     """
-    run_num, method_name, dim_pair, opt_results_dict, zoom_results_dict = args
+    run_num, method_name, dim_pair, opt_results_dict, zoom_results_dict, best_result = args
 
     import gc
     gc.collect()  # Clean up memory before plotting
     gc.collect(2)  # Aggressive collection to free up memory
-
-    solver = _solvers[run_num]
-    best_result = _global_optima.get(run_num)
 
     # Get results
     result_ana, trajectory_ana = opt_results_dict["ana"]
@@ -1314,8 +1310,6 @@ def _create_plot_task(args):
 
     # Create visualization
     save_msg = create_visualization(
-        solver,
-        _bounds_dict[run_num],
         full_data,
         zoom_data_list,
         [z for z in all_zooms if z != 1],
@@ -1651,15 +1645,16 @@ def main():
                             run_num,
                             method_name,
                             dim_pair,
-                            all_opt_results,
-                            all_zoom_results,
+                            opt_lookup[(run_num, method_name)],
+                            zoom_lookup[(run_num, method_name, dim_pair)],
+                            _global_optima.get(run_num),
                         )
                     )
 
         # Execute plots in parallel
         if n_workers > 1:
             print(f"Total plotting tasks: {len(plot_tasks)}")
-            with multiprocessing.Pool(processes=n_workers) as pool:
+            with multiprocessing.get_context("spawn").Pool(processes=n_workers) as pool:
                 plot_results = list(
                     tqdm(
                         pool.imap(_create_plot_task, plot_tasks),
