@@ -208,3 +208,6 @@ __marimo__/
 
 
 *.png
+
+# scikit-build-core persistent build dir (used by reinstall.sh)
+_skbuild_*/
