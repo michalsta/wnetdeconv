@@ -41,6 +41,10 @@ class DeconvSolver:
     solver : NetworkSimplex | CostScaling | CycleCanceling | CapacityScaling, optional
         Solver configuration object.  Takes precedence over ``method``.
         Defaults to ``NetworkSimplex()`` (warm restarts, BLOCK_SEARCH pivot).
+    force_dense_1d : bool, optional
+        In 1D, force the O(m*n) dense factory instead of the O(m+n) chain
+        factory (default False = chain in 1D).  Forwarded to
+        :class:`WassersteinNetwork`.
 
     Attributes
     ----------
@@ -83,6 +87,7 @@ class DeconvSolver:
         theoretical_trash_cost: Optional[Union[int, float]] = None,
         method: str = None,
         solver=None,
+        force_dense_1d: bool = False,
     ) -> None:
 
         if (
@@ -163,6 +168,7 @@ class DeconvSolver:
             self.theoretical_spectra,
             distance,
             int(max_distance * scale_factor),
+            force_dense_1d=force_dense_1d,
             method=method,
             solver=solver,
         )
@@ -199,7 +205,7 @@ class DeconvSolver:
         Returns:
             float: The normalized total cost.
         """
-        return self.graph.total_cost() / self.scale_factor / self.scale_factor
+        return self.graph.total_cost() / (self.scale_factor * self.scale_factor)
 
     def print(self) -> None:
         """
@@ -242,11 +248,24 @@ class DeconvSolver:
         np.ndarray
             Array of partial derivatives, one per theoretical spectrum.
         """
-        derivs = self.graph.spectrum_proportion_derivatives()
-        result = np.array(
-            [derivs.get(i, 0) for i in range(len(self.theoretical_spectra))]
+        return (
+            self.graph.spectrum_proportion_derivatives().astype(float)
+            / (self.scale_factor * self.scale_factor)
         )
-        return result / self.scale_factor / self.scale_factor
+
+    def gradient_fast_approx(self) -> np.ndarray:
+        """Fast, APPROXIMATE gradient (dual-potential difference instead of the
+        residual shortest-path marginal).
+
+        Much cheaper (skips the per-subgraph Dijkstra) but returns a
+        different, basis-dependent gradient: a lower bound on the true
+        marginal, exact only on the optimal flow support.  Opt-in; do not use
+        as a drop-in replacement for gradient() without validating convergence.
+        """
+        return (
+            self.graph.spectrum_proportion_derivatives_fast_approx().astype(float)
+            / (self.scale_factor * self.scale_factor)
+        )
 
     def optimize(self, x0: Optional[np.ndarray] = None) -> OptimizeResult:
         """
