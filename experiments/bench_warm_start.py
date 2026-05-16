@@ -29,7 +29,12 @@ from wnetdeconv import DeconvSolver, Spectrum_1D
 from wnet.distances import DistanceMetric
 from wnet.wnet_cpp import NetworkSimplex, WarmMode
 
-DATA = "/home/mist/wnet_stuff/magnetstein/examples"
+# magnetstein example CSVs live in the sibling `magnetstein` repo; resolve
+# relative to this script (experiments/ -> wnetdeconv -> git -> magnetstein)
+# so it works regardless of cwd and without the old wnet_stuff symlink.
+DATA = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "..", "..", "magnetstein", "examples"))
 CHAIN_THRESH = 0.01   # 1% of max intensity  (~6700 nodes)
 DENSE_THRESH = 0.12   # stricter -> ~5x fewer nodes (~1360) so dense is tractable
 KAPPA = 0.25
