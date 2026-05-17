@@ -98,7 +98,8 @@ def run_case(trash, dense):
           f"speedup={tcm / max(twm, 1e-9):<6.1f}x")
 
     for label, mode in [("none", WarmMode.NONE), ("simpl", WarmMode.Simple),
-                        ("dual", WarmMode.Dual), ("primal", WarmMode.Primal)]:
+                        ("dual", WarmMode.Dual), ("primal", WarmMode.Primal),
+                        ("dualR", WarmMode.DualRatio)]:
         s2 = make_solver(mode, trash, dense)
         solve_times = []; n_calls = [0]
 
