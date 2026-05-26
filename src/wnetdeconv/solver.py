@@ -1,3 +1,4 @@
+import warnings
 from collections import namedtuple
 from collections.abc import Sequence
 from typing import Callable, Optional, Union, List, Tuple
@@ -30,7 +31,13 @@ class DeconvSolver:
         Cost for assigning unmatched peaks to trash (symmetric). Used as fallback for
         experimental_trash_cost / theoretical_trash_cost when only one is set.
     scale_factor : None, int, or float, optional
-        Scaling factor for intensities and costs. If None, it is computed automatically.
+        Scaling factor for intensities and costs. If None, it is computed from ``precision``.
+    precision : float, optional
+        Desired relative precision of the cost output (fraction of the theoretical cost
+        upper bound ``max_cost_per_unit_flow * max_sum_intensity``).  Drives both the
+        auto scale_factor and the ``ftol`` stop criterion passed to scipy optimizers.
+        Ignored when ``scale_factor`` is supplied explicitly.  Default 1e-3 (≈ 3
+        significant figures).
     experimental_trash_cost : int or float, optional
         Cost for discarding unmatched empirical peaks. Enables asymmetric trash mode.
     theoretical_trash_cost : int or float, optional
@@ -88,6 +95,7 @@ class DeconvSolver:
         method: str = None,
         solver=None,
         force_dense_1d: bool = False,
+        precision: float = 1e-3,
     ) -> None:
 
         if (
@@ -143,19 +151,32 @@ class DeconvSolver:
             )
             max_sum_intensity = max(empirical_sum_intensity, theoretical_sum_intensity)
 
-            # Bound the maximum cost per unit of flow in the scaled integer network.
-            # Matching edges pay distance * sf per unit of flow (flow scaled by sf);
-            # trash edges pay trash_cost * sf per unit of flow.  Total cost is at most
-            # max_cost_per_unit_flow * max_sum_intensity * sf^2, which must stay < 2^60.
+            # max_cost_per_unit_flow * max_sum_intensity is the upper bound on the
+            # total cost in original units.  We want integer resolution of
+            # precision * that quantity, so:
+            #   1/sf^2 = precision * max_cost_per_unit_flow * max_sum_intensity
+            #   sf = 1 / sqrt(precision * max_cost_per_unit_flow * max_sum_intensity)
+            # Clamp so that sf^2 * max_cost_per_unit_flow * max_sum_intensity < 2^60.
             max_cost_per_unit_flow = max([max_distance] + active_costs)
-            scale_factor = np.sqrt(
-                ALMOST_MAXINT / (max_sum_intensity * max_cost_per_unit_flow)
-            )
+            cost_scale = max_cost_per_unit_flow * max_sum_intensity
+            desired_sf = np.sqrt(1.0 / (precision * cost_scale))
+            max_sf = np.sqrt(ALMOST_MAXINT / cost_scale)
+            if desired_sf > max_sf:
+                warnings.warn(
+                    f"Requested precision {precision} exceeds int64 capacity for this "
+                    f"dataset (cost_scale={cost_scale:.3g}); clamping scale_factor to "
+                    f"{max_sf:.3g}.  Achieved precision will be "
+                    f"{1.0 / max_sf**2 / cost_scale:.2e} (relative)."
+                )
+                scale_factor = max_sf
+            else:
+                scale_factor = desired_sf
             assert (
                 scale_factor > 0
             ), "Can't auto-compute a sensible scale factor. You might have some luck with setting it manually, but it probably means something about your data or trash_cost is off."
 
         self.scale_factor = scale_factor
+        self._ftol = 1.0 / (scale_factor * scale_factor)
         self.empirical_spectrum = empirical_spectrum.positions_intensities_scaled(
             scale_factor
         )
@@ -295,6 +316,7 @@ class DeconvSolver:
             jac=True,
             method="L-BFGS-B",
             bounds=[(0.0, None)] * n,
+            options={"ftol": self._ftol},
         )
 
     def no_subgraphs(self) -> int:
@@ -430,7 +452,7 @@ class ConstrainedSolver(DeconvSolver):
             method="SLSQP",
             bounds=[(0.0, None)] * n,
             constraints=constraint,
-            options={"maxiter": 2000, "ftol": 1e-14},
+            options={"maxiter": 2000, "ftol": self._ftol},
         )
 
 
@@ -472,6 +494,7 @@ class MagnetsteinSolver(ConstrainedSolver):
         MTD_th: Optional[float] = None,
         method: str = None,
         solver=None,
+        precision: float = 1e-3,
     ) -> None:
         emp = empirical_spectrum.normalized()
         theos = [t.normalized() for t in theoretical_spectra]
@@ -484,6 +507,7 @@ class MagnetsteinSolver(ConstrainedSolver):
                 trash_cost=MTD,
                 method=method,
                 solver=solver,
+                precision=precision,
             )
         else:
             super().__init__(
@@ -495,4 +519,193 @@ class MagnetsteinSolver(ConstrainedSolver):
                 theoretical_trash_cost=MTD_th,
                 method=method,
                 solver=solver,
+                precision=precision,
             )
+
+
+class MassersteinSolver(DeconvSolver):
+    """
+    Reproduces masserstein's ``dualdeconv2`` / ``dualdeconv4``.
+
+    All spectra are normalized to sum to 1 internally (as dualdeconv2
+    requires).  The distance is always LINF (= absolute distance in 1D, the
+    dual of W1 / earth mover's distance used by masserstein).
+
+    Faithful model of dualdeconv2's LP
+    ----------------------------------
+    dualdeconv2 prices transport at the true linear W1 cost with an
+    experimental abyss at ``MTD``, and has *no theoretical abyss*: every unit
+    of ``w_k * theo_k`` must reach an experimental position — a component is
+    discarded only by driving ``w_k -> 0``, never by trashing theoretical
+    mass.  Transporting a unit farther than ``MTD`` is never optimal in that
+    LP (the experimental abyss at ``MTD`` is always cheaper), so ``MTD`` is
+    already the LP's *effective* transport cap.  We reproduce that with:
+
+      * ``max_distance = MTD`` — the effective cap; also keeps the 1D chain
+        sparse (O(m+n)) instead of dense (O(m*n)) on real spectra;
+      * ``experimental_trash_cost = MTD`` — the denoising penalty;
+      * ``theoretical_trash_cost = 2*MTD`` (dualdeconv2 case).  This is a
+        numerical device only: with experimental-only trash the inner
+        min-cost-flow cost ``f(w)`` is degenerate/flat (un-routable
+        theoretical mass is dropped for free, so the outer optimizer gets a
+        zero gradient and returns its starting point — the old bug).  Any
+        cost strictly above the ``MTD`` transport cap is never chosen over
+        transporting or lowering ``w_k``, so it carries no flow at the
+        optimum (= "no theoretical abyss; drop the component by lowering
+        w_k") yet makes ``f(w)`` well-defined and convex for every ``w``.
+        The multiplier is kept small (2x) on purpose: the auto
+        ``scale_factor`` divides by ``max_cost_per_unit_flow``, so a large
+        value would shrink it and lose m/z precision.  A sweep (2/4/8/20x)
+        showed 2x gives the best Part-1 agreement (L1 ~2e-7 vs dualdeconv2)
+        while 8x already degrades it ~4x, with no compensating gain — the
+        fixed-integer network's dynamic range makes a true +inf infeasible,
+        so this is a deliberate approximation, exact for fully-placeable and
+        fully-unplaceable components, slightly soft for partial placement.
+
+    Residual caveats:
+      * dualdeconv2 solves one joint LP (proportions = exact shadow prices);
+        this is a nested optimization (SLSQP over ``w``, inner MCF).  The
+        objective and noise/sum behaviour match, but under degeneracy
+        (near-collinear components) per-component proportions agree only to
+        optimizer tolerance, not bit-exactly.
+      * On raw unfiltered spectra the two formulations agree closely in
+        controlled tests (single/multi-component, collinear decoys, dense
+        overlapping + noise — see
+        ``experiments/direct_dualdeconv2_{nofilter,multi,dense}.py``):
+        objective to ~1e-5, signal fraction to ~1%, decoys zeroed.
+      * On DENSE-noisy mass spectra (e.g. hemoglobin Part 2 in
+        ``compare_dualdeconv2.py``) this reproduction breaks structurally:
+        the nested empirical->theoretical MCF matches per peak with the
+        sum Σ w_j*theo_j, while dualdeconv2's joint LP couples all isotope
+        positions of a component via Σ thr_ji Z_i ≤ 0.  An 11-config grid
+        search (``experiments/grid_search_masserstein.py``) over
+        max_distance and theoretical_trash_cost found that NO setting
+        bridges the gap — larger max_distance makes it worse (more noise
+        targets), larger theo_trash does nothing (theo-trash never fires at
+        the optimum on dense noise), and either breaks the minimal case
+        first.  Cross-scoring confirms it: at w_wnet, masserstein's own LP
+        gives ~100x worse cost than at w_dd2 — i.e. wnetdeconv's reported
+        ``fun`` is its own (lenient) model, not a competitive solution to
+        masserstein's LP.  For inputs in this regime use
+        ``masserstein.estimate_proportions`` (which pre-filters to the
+        theoretical envelope, the agreement regime) or call
+        ``dualdeconv2`` directly — not this class.
+
+    ``deconvolve()`` uses SLSQP with bounds w_k >= 0 and the explicit
+    inequality constraint sum(w_k) <= 1, which dualdeconv2 enforces implicitly
+    via sum(probs) + sum(abyss) = 1, abyss >= 0.
+
+    For the symmetric case (MTD_th=None) this reproduces dualdeconv2;
+    with MTD_th set it reproduces dualdeconv4 (real theoretical penalty
+    MTD_th, still with the unbounded transport metric).
+
+    Parameters
+    ----------
+    empirical_spectrum : Distribution
+        Empirical spectrum (normalized internally to sum to 1).
+    theoretical_spectra : Sequence[Distribution]
+        Theoretical spectra (each normalized internally).
+    MTD : float
+        Maximum Transport Distance / denoising penalty (``penalty`` in dualdeconv2).
+    MTD_th : float, optional
+        Separate theoretical trash cost.  None → symmetric = dualdeconv2;
+        non-None → asymmetric = dualdeconv4.
+    theo_trash_mult : float, optional
+        Multiplier on MTD for the +inf-proxy theoretical trash cost
+        (dualdeconv2 path only).  Default 10x is what fixes the
+        minimal-divergence example
+        (``experiments/minimal_dense_noise_divergence.py``); below ~10x the
+        nested MCF under-prices un-routable theoretical mass relative to
+        masserstein's real-distance transport.  Should be at least as large as
+        the maximum inter-isotope distance you expect un-routed mass to need
+        to travel (in m/z units of MTD).  Above ~few hundred it can lose
+        precision via the auto ``scale_factor``.
+    method : str, optional
+        Min-cost flow algorithm. Ignored when ``solver`` is provided.
+    solver : NetworkSimplex | CostScaling | CycleCanceling | CapacityScaling, optional
+        Solver configuration object.  Takes precedence over ``method``.
+    """
+
+    def __init__(
+        self,
+        empirical_spectrum: Distribution,
+        theoretical_spectra: Sequence[Distribution],
+        MTD: float,
+        MTD_th: Optional[float] = None,
+        theo_trash_mult: float = 10.0,
+        method: str = None,
+        solver=None,
+        precision: float = 1e-3,
+    ) -> None:
+        emp = empirical_spectrum.normalized()
+        theos = [t.normalized() for t in theoretical_spectra]
+        if MTD_th is None:
+            super().__init__(
+                emp,
+                theos,
+                distance=DistanceMetric.LINF,
+                max_distance=MTD,
+                experimental_trash_cost=MTD,
+                # effective +inf: large enough that the optimizer prefers
+                # lowering w_k over carrying flow on this edge — i.e. mimics
+                # masserstein's "no theoretical abyss; transport at real
+                # distance".  Default 10x covers the typical asymmetric-isotope
+                # case; user can dial up if inter-isotope distances >> MTD.
+                theoretical_trash_cost=theo_trash_mult * MTD,
+                method=method,
+                solver=solver,
+                precision=precision,
+            )
+        else:
+            super().__init__(
+                emp,
+                theos,
+                distance=DistanceMetric.LINF,
+                max_distance=max(MTD, MTD_th),
+                experimental_trash_cost=MTD,
+                theoretical_trash_cost=MTD_th,
+                method=method,
+                solver=solver,
+                precision=precision,
+            )
+
+    def deconvolve(self, x0: Optional[np.ndarray] = None) -> dict:
+        """
+        Find optimal component proportions, matching dualdeconv2's output format.
+
+        Parameters
+        ----------
+        x0 : np.ndarray, optional
+            Initial proportions. Defaults to uniform 1/(2k) (interior of feasible set).
+
+        Returns
+        -------
+        dict
+            probs : list[float]  – weight of each theoretical spectrum
+            fun   : float        – optimal transport cost (= dual LP objective)
+            success : bool
+        """
+        n = len(self.theoretical_spectra)
+        if x0 is None:
+            x0 = np.ones(n) / (2 * n)
+
+        def cost_and_grad(w):
+            self.set_point(w)
+            return self.total_cost(), self.gradient()
+
+        constraints = [{
+            "type": "ineq",
+            "fun": lambda w: 1.0 - w.sum(),
+            "jac": lambda w: -np.ones(n),
+        }]
+
+        result = minimize(
+            cost_and_grad,
+            x0=x0,
+            jac=True,
+            method="SLSQP",
+            bounds=[(0.0, None)] * n,
+            constraints=constraints,
+            options={"maxiter": 2000, "ftol": self._ftol},
+        )
+        return {"probs": list(result.x), "fun": result.fun, "success": result.success}
