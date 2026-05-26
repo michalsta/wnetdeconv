@@ -54,8 +54,11 @@ def _load_csv_spectrum(path: Path, n_trim: Optional[int] = None) -> Spectrum:
     arr = np.loadtxt(path, delimiter=",")
     pos, ints = arr[:, 0], arr[:, 1]
     if n_trim is not None and n_trim < len(ints):
-        idx = np.argpartition(ints, -n_trim)[-n_trim:]
-        pos, ints = pos[np.sort(idx)], ints[np.sort(idx)]
+        # Uniform subsampling preserves consecutive spacing for the chain factory.
+        # Top-k intensity trimming would produce scattered points with large gaps,
+        # which inflates edge costs and makes network simplex very slow.
+        idx = np.round(np.linspace(0, len(ints) - 1, n_trim)).astype(int)
+        pos, ints = pos[idx], ints[idx]
     return Spectrum_1D(pos, ints, label=path.stem)
 
 
