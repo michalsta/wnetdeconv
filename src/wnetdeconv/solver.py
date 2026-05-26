@@ -151,22 +151,30 @@ class DeconvSolver:
             )
             max_sum_intensity = max(empirical_sum_intensity, theoretical_sum_intensity)
 
-            # max_cost_per_unit_flow * max_sum_intensity is the upper bound on the
-            # total cost in original units.  We want integer resolution of
-            # precision * that quantity, so:
-            #   1/sf^2 = precision * max_cost_per_unit_flow * max_sum_intensity
-            #   sf = 1 / sqrt(precision * max_cost_per_unit_flow * max_sum_intensity)
-            # Clamp so that sf^2 * max_cost_per_unit_flow * max_sum_intensity < 2^60.
+            # Two integer-quantization stages must both meet `precision`
+            # (relative resolution of the cost output):
+            #   (a) per-edge cost  → int(c * sf):     sf >= 1/(precision*min_cost)
+            #   (b) summed cost    → int(c*sf)*flow:  sf >= sqrt(1/(precision*cost_scale))
+            # (a) was previously missing; if sf was set by (b) alone and the
+            # spectra were unnormalized, int(max_distance*sf) could round to 0,
+            # silently producing a graph with no edges.  Clamp above by max_sf
+            # so total-cost accumulation stays under int64.
             max_cost_per_unit_flow = max([max_distance] + active_costs)
+            min_cost_per_unit_flow = min([max_distance] + active_costs)
             cost_scale = max_cost_per_unit_flow * max_sum_intensity
-            desired_sf = np.sqrt(1.0 / (precision * cost_scale))
+            sf_output = np.sqrt(1.0 / (precision * cost_scale))
+            sf_input  = 1.0 / (precision * min_cost_per_unit_flow)
+            desired_sf = max(sf_output, sf_input)
             max_sf = np.sqrt(ALMOST_MAXINT / cost_scale)
             if desired_sf > max_sf:
+                achieved_in  = 1.0 / (max_sf * min_cost_per_unit_flow)
+                achieved_out = 1.0 / (max_sf**2 * cost_scale)
                 warnings.warn(
                     f"Requested precision {precision} exceeds int64 capacity for this "
-                    f"dataset (cost_scale={cost_scale:.3g}); clamping scale_factor to "
+                    f"dataset (cost_scale={cost_scale:.3g}, "
+                    f"min_cost={min_cost_per_unit_flow:.3g}); clamping scale_factor to "
                     f"{max_sf:.3g}.  Achieved precision will be "
-                    f"{1.0 / max_sf**2 / cost_scale:.2e} (relative)."
+                    f"{max(achieved_in, achieved_out):.2e} (relative)."
                 )
                 scale_factor = max_sf
             else:
@@ -174,6 +182,16 @@ class DeconvSolver:
             assert (
                 scale_factor > 0
             ), "Can't auto-compute a sensible scale factor. You might have some luck with setting it manually, but it probably means something about your data or trash_cost is off."
+            if int(min_cost_per_unit_flow * scale_factor) < 1:
+                raise ValueError(
+                    f"Auto-computed scale_factor={scale_factor:.3g} cannot represent "
+                    f"min_cost_per_unit_flow={min_cost_per_unit_flow:.3g} as a "
+                    f"positive integer (the graph would have no edges).  "
+                    f"empirical_sum_intensity={empirical_sum_intensity:.3g}, "
+                    f"theoretical_sum_intensity={theoretical_sum_intensity:.3g}.  "
+                    f"Normalize the spectra, pass an explicit scale_factor, or "
+                    f"relax precision."
+                )
 
         self.scale_factor = scale_factor
         self._ftol = 1.0 / (scale_factor * scale_factor)
