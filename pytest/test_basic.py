@@ -18,6 +18,7 @@ def test_basic():
         distance=DistanceMetric.LINF,
         max_distance=10,
         trash_cost=100,
+        scale_factor=1e7,
     )
 
     solver.set_point([1.0, 1.0])

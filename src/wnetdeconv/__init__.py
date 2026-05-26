@@ -3,7 +3,7 @@
 
 
 from . import wnetdeconv_cpp
-from .solver import DeconvSolver
+from .solver import DeconvSolver, ConstrainedSolver, MagnetsteinSolver, MassersteinSolver
 from .spectrum import Spectrum, Spectrum_1D
 
 
