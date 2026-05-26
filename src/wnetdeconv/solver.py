@@ -151,30 +151,42 @@ class DeconvSolver:
             )
             max_sum_intensity = max(empirical_sum_intensity, theoretical_sum_intensity)
 
-            # Two integer-quantization stages must both meet `precision`
-            # (relative resolution of the cost output):
-            #   (a) per-edge cost  → int(c * sf):     sf >= 1/(precision*min_cost)
-            #   (b) summed cost    → int(c*sf)*flow:  sf >= sqrt(1/(precision*cost_scale))
-            # (a) was previously missing; if sf was set by (b) alone and the
-            # spectra were unnormalized, int(max_distance*sf) could round to 0,
-            # silently producing a graph with no edges.  Clamp above by max_sf
-            # so total-cost accumulation stays under int64.
+            # Output-precision constraint (original): integer resolution
+            # 1/sf^2 should be ~precision of the worst-case absolute cost
+            # max_cost*max_sum_intensity, so
+            #   sf >= sqrt(1/(precision * cost_scale)).
+            # This used to be the only constraint.  When the experimental
+            # spectrum has huge unnormalized intensities (raw MS counts ~1e7+),
+            # the formula drops sf so low that int(max_distance*sf) rounds to 0
+            # and the graph factory builds zero edges (silent failure).
+            #
+            # Per-edge floor: int(min_cost_per_unit_flow * sf) must be at least
+            # MIN_COST_TICKS so the cost map has usable resolution.  Below ~25
+            # the gradient signal is too coarse for L-BFGS-B to make progress
+            # (empirical: scaled_MTD=10 on pbttt → 1 iter, scaled_MTD=25 → 36
+            # iters with a real optimum).  Going higher than ~25 produces more
+            # accurate cost numbers but multiplies LEMON's pivot count on
+            # large graphs (cold solve scales roughly with sf), so we cap the
+            # auto floor at MIN_COST_TICKS rather than tying it to precision.
+            # Pass scale_factor explicitly (or tighten precision) when more
+            # input precision is needed.
+            MIN_COST_TICKS = 25
             max_cost_per_unit_flow = max([max_distance] + active_costs)
             min_cost_per_unit_flow = min([max_distance] + active_costs)
             cost_scale = max_cost_per_unit_flow * max_sum_intensity
             sf_output = np.sqrt(1.0 / (precision * cost_scale))
-            sf_input  = 1.0 / (precision * min_cost_per_unit_flow)
-            desired_sf = max(sf_output, sf_input)
+            sf_floor  = MIN_COST_TICKS / min_cost_per_unit_flow
+            desired_sf = max(sf_output, sf_floor)
             max_sf = np.sqrt(ALMOST_MAXINT / cost_scale)
             if desired_sf > max_sf:
-                achieved_in  = 1.0 / (max_sf * min_cost_per_unit_flow)
-                achieved_out = 1.0 / (max_sf**2 * cost_scale)
+                achieved_ticks = max_sf * min_cost_per_unit_flow
+                achieved_out   = 1.0 / (max_sf**2 * cost_scale)
                 warnings.warn(
                     f"Requested precision {precision} exceeds int64 capacity for this "
                     f"dataset (cost_scale={cost_scale:.3g}, "
                     f"min_cost={min_cost_per_unit_flow:.3g}); clamping scale_factor to "
-                    f"{max_sf:.3g}.  Achieved precision will be "
-                    f"{max(achieved_in, achieved_out):.2e} (relative)."
+                    f"{max_sf:.3g}.  Achieved cost precision {achieved_out:.2e} "
+                    f"(relative), min-cost integer ticks {achieved_ticks:.1f}."
                 )
                 scale_factor = max_sf
             else:
