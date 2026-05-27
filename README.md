@@ -10,6 +10,9 @@ flow (via [pylmcf](https://github.com/michalsta/pylmcf) / LEMON), giving an
 exact piecewise-linear objective with exact gradients — suitable for gradient-
 based outer optimisation with scipy.
 
+Supports 1-D spectra (NMR chemical shift, m/z) and higher-dimensional data
+(e.g. m/z + retention time).
+
 ## Installation
 
 ```bash
@@ -109,49 +112,6 @@ solver = ConstrainedSolver(
 result = solver.optimize()
 ```
 
-### `MagnetsteinSolver` — normalised, mass-constrained
-
-Normalises all spectra to unit sum before solving.  The mass constraint becomes
-`Σ wₛ = 1`.  Designed for NMR deconvolution.
-
-```python
-from wnetdeconv import MagnetsteinSolver
-from wnet.distances import DistanceMetric
-
-solver = MagnetsteinSolver(
-    empirical_spectrum=emp,
-    theoretical_spectra=[t1, t2],
-    distance=DistanceMetric.L1,
-    MTD=0.3,         # maximum transport distance / trash penalty
-)
-result = solver.optimize()
-```
-
-### `MassersteinSolver` — masserstein-compatible MS deconvolution
-
-Reproduces the `dualdeconv2` / `dualdeconv4` LP from the
-[masserstein](https://github.com/MatteoLacki/masserstein) package.  Spectra are
-normalised to unit sum; the distance metric is L∞ (absolute distance in 1-D,
-dual of W₁).  Returns a dict with keys `probs`, `fun`, `success`.
-
-```python
-from wnetdeconv import MassersteinSolver
-
-solver = MassersteinSolver(
-    empirical_spectrum=emp,
-    theoretical_spectra=[t1, t2],
-    MTD=0.3,
-)
-result = solver.deconvolve()
-print(result["probs"])   # list of proportions
-```
-
-For the dualdeconv4 variant (separate theoretical penalty) pass `MTD_th`:
-
-```python
-solver = MassersteinSolver(emp, [t1, t2], MTD=0.3, MTD_th=0.6)
-```
-
 ## Key parameters
 
 | Parameter | Applies to | Description |
@@ -162,7 +122,6 @@ solver = MassersteinSolver(emp, [t1, t2], MTD=0.3, MTD_th=0.6)
 | `theoretical_trash_cost` | `DeconvSolver` | Per-unit penalty for discarding theoretical mass. |
 | `precision` | all | Desired relative cost accuracy; drives `scale_factor` and `ftol` (default `1e-3`). |
 | `scale_factor` | all | Override automatic scaling (bypasses `precision`). |
-| `MTD` | `Magnetstein` / `Masserstein` | Maximum transport distance and experimental trash penalty. |
 
 ## Distance metrics
 
@@ -180,27 +139,13 @@ from wnetdeconv import Spectrum
 emp = Spectrum.FromFeatureXML("sample.featureXML")   # requires pyopenms
 ```
 
-## Relationship to masserstein
-
-`MassersteinSolver` is a nested-optimisation reimplementation of masserstein's
-`dualdeconv2` / `dualdeconv4`.  It agrees closely on clean or lightly noisy
-spectra, and exposes the same `MTD` / `MTD_th` parameters.  For dense, heavily
-noisy mass spectra the two formulations diverge structurally (see the
-`experiments/` directory); in that regime use masserstein's
-`estimate_proportions` directly.
-
-`MagnetsteinSolver` targets NMR data (chemical-shift spectra) and is not
-present in masserstein.
-
 ## Architecture
 
 ```
 wnetdeconv
 ├── Spectrum / Spectrum_1D   — data containers (extend wnet.Distribution)
 ├── DeconvSolver             — core: builds WassersteinNetwork, exposes cost + gradient
-├── ConstrainedSolver        — adds total-mass equality, uses SLSQP
-├── MagnetsteinSolver        — normalised ConstrainedSolver for NMR
-└── MassersteinSolver        — masserstein-compatible MS solver
+└── ConstrainedSolver        — adds total-mass equality, uses SLSQP
 ```
 
 The underlying min-cost flow is provided by
