@@ -143,93 +143,116 @@ class DeconvSolver:
         else:
             active_costs = [trash_cost]
 
-        if scale_factor is None:
-            ALMOST_MAXINT = 2**60
-            empirical_sum_intensity = empirical_spectrum.sum_intensities
-            theoretical_sum_intensity = sum(
-                t.sum_intensities for t in theoretical_spectra
-            )
-            max_sum_intensity = max(empirical_sum_intensity, theoretical_sum_intensity)
+        ALMOST_MAXINT = 2**60
+        empirical_sum_intensity = empirical_spectrum.sum_intensities
+        theoretical_sum_intensity = sum(
+            t.sum_intensities for t in theoretical_spectra
+        )
+        max_sum_intensity = max(empirical_sum_intensity, theoretical_sum_intensity)
+        max_cost_per_unit_flow = max([max_distance] + active_costs)
+        min_cost_per_unit_flow = min([max_distance] + active_costs)
 
-            # Output-precision constraint (original): integer resolution
-            # 1/sf^2 should be ~precision of the worst-case absolute cost
-            # max_cost*max_sum_intensity, so
-            #   sf >= sqrt(1/(precision * cost_scale)).
-            # This used to be the only constraint.  When the experimental
-            # spectrum has huge unnormalized intensities (raw MS counts ~1e7+),
-            # the formula drops sf so low that int(max_distance*sf) rounds to 0
-            # and the graph factory builds zero edges (silent failure).
+        if scale_factor is None:
+            # The cost integer is sum(int_flow * int_dist), with int_flow ≈
+            # flow*sf_intensity and int_dist ≈ dist*sf_distance.  The two
+            # scaling factors are independent — distance scaling controls
+            # quantization of per-arc distances (applied after the metric, so
+            # int_dist = int(dist * sf_distance)); intensity scaling controls
+            # quantization of per-peak intensities (int_intensity =
+            # int(intensity * sf_intensity)).  They affect different sources
+            # of quantization error, so they are tuned separately from
+            # `precision`.
             #
-            # Per-edge floor: int(min_cost_per_unit_flow * sf) must be at least
-            # MIN_COST_TICKS so the cost map has usable resolution.  Below ~25
-            # the gradient signal is too coarse for L-BFGS-B to make progress
-            # (empirical: scaled_MTD=10 on pbttt → 1 iter, scaled_MTD=25 → 36
-            # iters with a real optimum).  Going higher than ~25 produces more
-            # accurate cost numbers but multiplies LEMON's pivot count on
-            # large graphs (cold solve scales roughly with sf), so we cap the
-            # auto floor at MIN_COST_TICKS rather than tying it to precision.
-            # Pass scale_factor explicitly (or tighten precision) when more
-            # input precision is needed.
-            MIN_COST_TICKS = 25
-            max_cost_per_unit_flow = max([max_distance] + active_costs)
-            min_cost_per_unit_flow = min([max_distance] + active_costs)
-            cost_scale = max_cost_per_unit_flow * max_sum_intensity
-            sf_output = np.sqrt(1.0 / (precision * cost_scale))
-            sf_floor  = MIN_COST_TICKS / min_cost_per_unit_flow
-            desired_sf = max(sf_output, sf_floor)
-            max_sf = np.sqrt(ALMOST_MAXINT / cost_scale)
-            if desired_sf > max_sf:
-                achieved_ticks = max_sf * min_cost_per_unit_flow
-                achieved_out   = 1.0 / (max_sf**2 * cost_scale)
+            # Distance: per-arc absolute distance error is 1/sf_distance.  To
+            # keep the relative cost error per arc at most `precision`, the
+            # bucket size 1/sf_distance must be ≤ precision * min_cost (the
+            # smallest cost-per-unit-flow in use — typically MTD or the trash
+            # cost).  Inverting:
+            #   sf_distance = 1 / (precision * min_cost_per_unit_flow)
+            # which gives int(min_cost * sf_distance) = 1/precision integer
+            # ticks within the smallest cost class.
+            sf_distance = 1.0 / (precision * min_cost_per_unit_flow)
+
+            # Intensity: per-arc absolute intensity error is 1/sf_intensity.
+            # Choose sf_intensity so that int(total_intensity) = 1/precision
+            # discrete flow levels.  Inverting:
+            #   sf_intensity = 1 / (precision * max_sum_intensity).
+            sf_intensity = 1.0 / (precision * max_sum_intensity)
+
+            # int64 cap: per-arc int cost ≤ max_cost * sf_distance *
+            # max_sum_intensity * sf_intensity = (sf_distance * sf_intensity)
+            # * (max_cost * max_sum_intensity).  Cap so total fits in 2^60.
+            cap_product = ALMOST_MAXINT / (
+                max_cost_per_unit_flow * max_sum_intensity
+            )
+            product = sf_distance * sf_intensity
+            if product > cap_product:
+                shrink = np.sqrt(cap_product / product)
+                sf_distance *= shrink
+                sf_intensity *= shrink
                 warnings.warn(
-                    f"Requested precision {precision} exceeds int64 capacity for this "
-                    f"dataset (cost_scale={cost_scale:.3g}, "
-                    f"min_cost={min_cost_per_unit_flow:.3g}); clamping scale_factor to "
-                    f"{max_sf:.3g}.  Achieved cost precision {achieved_out:.2e} "
-                    f"(relative), min-cost integer ticks {achieved_ticks:.1f}."
+                    f"Requested precision {precision} exceeds int64 capacity "
+                    f"for this dataset (max_cost={max_cost_per_unit_flow:.3g}, "
+                    f"max_sum_intensity={max_sum_intensity:.3g}); shrinking "
+                    f"sf_distance/sf_intensity by {shrink:.3g}.  Achieved "
+                    f"relative precision ~{precision/shrink:.2e}."
                 )
-                scale_factor = max_sf
-            else:
-                scale_factor = desired_sf
-            assert (
-                scale_factor > 0
-            ), "Can't auto-compute a sensible scale factor. You might have some luck with setting it manually, but it probably means something about your data or trash_cost is off."
-            if int(min_cost_per_unit_flow * scale_factor) < 1:
+            assert sf_distance > 0 and sf_intensity > 0, (
+                "Can't auto-compute sensible sf_distance/sf_intensity. "
+                "You might have some luck with setting scale_factor manually, "
+                "but it probably means something about your data or trash_cost "
+                "is off."
+            )
+            if int(min_cost_per_unit_flow * sf_distance) < 1:
                 raise ValueError(
-                    f"Auto-computed scale_factor={scale_factor:.3g} cannot represent "
-                    f"min_cost_per_unit_flow={min_cost_per_unit_flow:.3g} as a "
-                    f"positive integer (the graph would have no edges).  "
+                    f"Auto-computed sf_distance={sf_distance:.3g} cannot "
+                    f"represent min_cost_per_unit_flow={min_cost_per_unit_flow:.3g} "
+                    f"as a positive integer (the graph would have no edges).  "
                     f"empirical_sum_intensity={empirical_sum_intensity:.3g}, "
                     f"theoretical_sum_intensity={theoretical_sum_intensity:.3g}.  "
                     f"Normalize the spectra, pass an explicit scale_factor, or "
                     f"relax precision."
                 )
+        else:
+            # Backwards-compat: explicit scale_factor sets both factors equal.
+            sf_distance = float(scale_factor)
+            sf_intensity = float(scale_factor)
 
-        self.scale_factor = scale_factor
-        self._ftol = 1.0 / (scale_factor * scale_factor)
-        self.empirical_spectrum = empirical_spectrum.positions_intensities_scaled(
-            scale_factor
-        )
-        self.theoretical_spectra = [
-            t.positions_intensities_scaled(scale_factor) for t in theoretical_spectra
-        ]
+        self.sf_distance = sf_distance
+        self.sf_intensity = sf_intensity
+        # Compatibility alias.  When auto-computed the factors are unequal;
+        # `scale_factor` then reports the geometric mean (matches the legacy
+        # quadratic unscaling factor sf_distance*sf_intensity = scale_factor^2).
+        self.scale_factor = float(np.sqrt(sf_distance * sf_intensity))
+        self._ftol = 1.0 / (sf_distance * sf_intensity)
+
+        def _scale_spec(spec):
+            new_pos = np.asarray(spec.positions, dtype=np.float64) * sf_distance
+            new_int = (
+                np.asarray(getattr(spec, "original_intensities", spec.intensities),
+                           dtype=np.float64) * sf_intensity
+            )
+            return type(spec)(new_pos, new_int, label=spec.label)
+
+        self.empirical_spectrum = _scale_spec(empirical_spectrum)
+        self.theoretical_spectra = [_scale_spec(t) for t in theoretical_spectra]
 
         self.graph = WassersteinNetwork(
             self.empirical_spectrum,
             self.theoretical_spectra,
             distance,
-            int(max_distance * scale_factor),
+            int(max_distance * sf_distance),
             force_dense_1d=force_dense_1d,
             method=method,
             solver=solver,
         )
         if asymmetric:
             if eff_exp is not None:
-                self.graph.add_experimental_trash(int(eff_exp * scale_factor))
+                self.graph.add_experimental_trash(int(eff_exp * sf_distance))
             if eff_theo is not None:
-                self.graph.add_theoretical_trash(int(eff_theo * scale_factor))
+                self.graph.add_theoretical_trash(int(eff_theo * sf_distance))
         else:
-            self.graph.add_simple_trash(int(trash_cost * scale_factor))
+            self.graph.add_simple_trash(int(trash_cost * sf_distance))
         self.graph.build()
         self.point = None
 
@@ -256,7 +279,7 @@ class DeconvSolver:
         Returns:
             float: The normalized total cost.
         """
-        return self.graph.total_cost() / (self.scale_factor * self.scale_factor)
+        return self.graph.total_cost() / (self.sf_distance * self.sf_intensity)
 
     def print(self) -> None:
         """
@@ -286,7 +309,7 @@ class DeconvSolver:
             empirical_peak_idx, theoretical_peak_idx, flow = (
                 self.graph.flows_for_target(i)
             )
-            result.append(_Flow(empirical_peak_idx, theoretical_peak_idx, flow / self.scale_factor))
+            result.append(_Flow(empirical_peak_idx, theoretical_peak_idx, flow / self.sf_intensity))
         return result
 
     def gradient(self) -> np.ndarray:
@@ -301,7 +324,7 @@ class DeconvSolver:
         """
         return (
             self.graph.spectrum_proportion_derivatives().astype(float)
-            / (self.scale_factor * self.scale_factor)
+            / (self.sf_distance * self.sf_intensity)
         )
 
     def gradient_fast_approx(self) -> np.ndarray:
@@ -315,7 +338,7 @@ class DeconvSolver:
         """
         return (
             self.graph.spectrum_proportion_derivatives_fast_approx().astype(float)
-            / (self.scale_factor * self.scale_factor)
+            / (self.sf_distance * self.sf_intensity)
         )
 
     def optimize(self, x0: Optional[np.ndarray] = None) -> OptimizeResult:
