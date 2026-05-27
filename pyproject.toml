@@ -32,16 +32,11 @@ pytest = ["pytest", "pandas", "numpy", "scipy"]
 testpaths = ["pytest"]
 
 [tool.scikit-build.sdist]
-exclude = ["**/*"]
-include = [
-    "/src/**/*.py",
-    "/src/**/*.c",
-    "/src/**/*.hpp",
-    "/src/**/*.h",
-    "/src/**/*.cpp",
-    "/src/**/*.cc",
-    "/LICENCE",
-    "/README.md",
-    "/pyproject.toml",
-    "/CMakeLists.txt"
+exclude = [
+    ".github/",
+    "experiments/",
+    "pytest/",
+    "optimization_example.py",
+    "reinstall.sh",
+    ".gitignore",
 ]
