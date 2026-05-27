@@ -153,6 +153,15 @@ The underlying min-cost flow is provided by
 [pylmcf](https://github.com/michalsta/pylmcf) (LEMON-based MCF algorithms,
 including warm-restart Network Simplex).
 
+## Related work
+
+**Sister paper:** [WNetAlign](https://github.com/michalsta/wnetalign) applies the same truncated Wasserstein / network simplex machinery to MS and NMR spectral alignment:
+
+Król J, Bochenek M, Jopa S, Kazimierczuk K, Gambin A, Startek MP (2026).
+WNetAlign: fast and accurate spectra alignment using truncated Wasserstein distance and network simplex.
+*Briefings in Bioinformatics*, 27(3), bbag247.
+https://doi.org/10.1093/bib/bbag247
+
 ## License
 
 MIT
