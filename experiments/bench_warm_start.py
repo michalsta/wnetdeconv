@@ -65,7 +65,22 @@ _WARM_MODES = [
     ("dualG",  WarmMode.DualGreedy),
     ("lct",    WarmMode.LinkCut),
 ]
-_MODE_LABELS = [label for label, _ in _WARM_MODES]
+
+# External LP-based deconvolution solvers, plumbed alongside the warm modes
+# as if they were extra algorithm variants.  Their inner mechanism is unrelated
+# to wnet's flow-LP + L-BFGS-B (they solve a single dual LP via pulp/CBC or
+# Gurobi), so the warm/dual/primal/cold counters don't apply — they always
+# report a single cold solve.  Subject to the same per-task timeout.
+_LP_VARIANTS = [
+    ("masser", False),   # masserstein.deconv_simplex.estimate_proportions
+    ("magnet", True),    # magnetstein's vendored fork
+]
+MAGNETSTEIN_PATH = "/home/mist/git/magnetstein"
+
+_MODE_LABELS = (
+    [label for label, _ in _WARM_MODES]
+    + [label for label, _ in _LP_VARIANTS]
+)
 
 _LBFGS_OPTS  = {"ftol": 1e-15, "gtol": 1e-10, "maxiter": 500}
 _DENSE_SCALE = 0.2   # approx_runtime multiplier for dense factory (~5× fewer peaks)
@@ -73,8 +88,8 @@ _N_REPROBE   = 10    # identical re-solve repetitions (default)
 _N_GRAD      = 150   # gradient-variant timing repetitions
 _TIMEOUT_S   = 180   # per-mode timeout (seconds)
 
-# Tasks per (dataset, config) group: 1 probe + N modes + 1 grad
-_TASKS_PER_GROUP = 1 + len(_WARM_MODES) + 1
+# Tasks per (dataset, config) group: 1 probe + warm modes + LP variants + 1 grad
+_TASKS_PER_GROUP = 1 + len(_WARM_MODES) + len(_LP_VARIANTS) + 1
 
 # Populated by main() before pool creation; inherited by all workers via fork.
 _PRELOADED: dict = {}
@@ -261,6 +276,136 @@ def _task_mode(args):
     }
 
 
+def _lp_subprocess(conn, ds_name, factory, trash, approx_rt, label, magnetstein,
+                   use_gurobi):
+    """Grandchild: run masserstein/magnetstein estimate_proportions, send result."""
+    try:
+        if magnetstein:
+            sys.path.insert(0, MAGNETSTEIN_PATH)
+            # data_loader.py imports the real masserstein during preload, so
+            # the parent worker already has `masserstein.*` cached.  Evict
+            # before the fresh import so MAGNETSTEIN_PATH wins.
+            for _name in list(sys.modules):
+                if _name == "masserstein" or _name.startswith("masserstein."):
+                    del sys.modules[_name]
+        # Lazy import: do this after fork so the two `masserstein` packages
+        # (real + magnetstein's vendored fork) don't poison the worker pool.
+        from masserstein import Spectrum as MasserSpectrum
+        from masserstein.deconv_simplex import estimate_proportions
+        import pulp as lp
+    except Exception as exc:
+        conn.send({"error": f"import: {type(exc).__name__}: {exc}"})
+        return
+
+    try:
+        emp, theo, kappa, _eff = _get_dataset(ds_name, factory, approx_rt)
+    except Exception as exc:
+        conn.send({"error": str(exc)})
+        return
+
+    # masserstein/magnetstein assert non-negative positions (designed for
+    # mass-spec m/z values).  Some NMR datasets have ppm < 0; shift every
+    # spectrum by the same constant so the LP sees non-negative positions.
+    # L1/L2/Linf transport distances are translation-invariant, so a uniform
+    # shift doesn't affect the LP's optimum.
+    all_pos = np.concatenate(
+        [np.asarray(emp.positions).ravel()]
+        + [np.asarray(t.positions).ravel() for t in theo]
+    )
+    shift = max(0.0, -float(all_pos.min()) + 1.0)  # >0 keeps a 1.0 safety margin
+
+    def _to_masser(s, lbl):
+        pos = np.asarray(s.positions).ravel() + shift
+        ints = np.asarray(s.intensities, dtype=float).ravel()
+        total = float(ints.sum())
+        if total > 0:
+            ints = ints / total
+        return MasserSpectrum(confs=list(zip(pos.tolist(), ints.tolist())),
+                              label=lbl)
+
+    try:
+        exp_m = _to_masser(emp, "exp")
+        theo_m = [_to_masser(t, f"t{i}") for i, t in enumerate(theo)]
+        solver_obj = lp.GUROBI(msg=False) if use_gurobi else lp.PULP_CBC_CMD(msg=False)
+        kw = dict(MTD=kappa, MTD_th=kappa, MDC=0.0, MMD=-1,
+                  progress=False, verbose=False, solver=solver_obj)
+        if magnetstein:
+            # Magnetstein default `what_to_compare='concentration'` needs
+            # per-component `.protons`; switch to area-mode for plain Spectra.
+            kw["what_to_compare"] = "area"
+        t0 = time.perf_counter()
+        estimate_proportions(exp_m, theo_m, **kw)
+        t_total = time.perf_counter() - t0
+    except Exception as exc:
+        conn.send({"error": f"{type(exc).__name__}: {exc}"})
+        return
+
+    conn.send({
+        "error": None,
+        # LP variants do one cold solve; surface that in the same counters
+        # the warm modes use so _print_group's layout still works.
+        "nit":     1,
+        "n_calls": 1,
+        "warm":    0,
+        "dual":    0,
+        "primal":  0,
+        "cold":    1,
+        "t_total": t_total,
+        "med_ms":  t_total * 1e3,
+        "p95_ms":  t_total * 1e3,
+    })
+
+
+def _task_lp(args):
+    """One LP-variant (masserstein/magnetstein) run with a hard subprocess
+    timeout, mirroring _task_mode's fork + Pipe.poll layout."""
+    ds_name, factory, trash, approx_rt, timeout, label, magnetstein, use_gurobi = args
+    parent_conn, child_conn = multiprocessing.Pipe(duplex=False)
+    pid = os.fork()
+    if pid == 0:
+        parent_conn.close()
+        try:
+            _lp_subprocess(child_conn, ds_name, factory, trash, approx_rt,
+                           label, magnetstein, use_gurobi)
+        finally:
+            child_conn.close()
+            os._exit(0)
+
+    child_conn.close()
+    t0 = time.perf_counter()
+    try:
+        completed = parent_conn.poll(timeout)
+        if completed:
+            data = parent_conn.recv()
+        else:
+            os.kill(pid, signal.SIGTERM)
+            data = None
+    finally:
+        os.waitpid(pid, 0)
+    t_total = time.perf_counter() - t0
+
+    if data is not None and data.get("error"):
+        return {"kind": "mode", "dataset": ds_name, "factory": factory,
+                "trash": trash, "label": label, "error": data["error"],
+                "timeout": timeout}
+
+    return {
+        "kind": "mode", "dataset": ds_name, "factory": factory, "trash": trash,
+        "error": None, "label": label,
+        "nit":     data["nit"]     if data else 0,
+        "n_calls": data["n_calls"] if data else 0,
+        "warm":    data["warm"]    if data else 0,
+        "dual":    data["dual"]    if data else 0,
+        "primal":  data["primal"]  if data else 0,
+        "cold":    data["cold"]    if data else 0,
+        "t_total": t_total,
+        "med_ms":  data["med_ms"]  if data else 0.0,
+        "p95_ms":  data["p95_ms"]  if data else 0.0,
+        "timed_out": not completed,
+        "timeout": timeout,
+    }
+
+
 def _task_grad(args):
     """Gradient-variant timing (exact, fast_approx, cached)."""
     ds_name, factory, trash, approx_rt = args
@@ -304,6 +449,8 @@ def _run_task(args):
         return _task_probe(args[1:])
     elif kind == "mode":
         return _task_mode(args[1:])
+    elif kind == "lp":
+        return _task_lp(args[1:])
     else:
         return _task_grad(args[1:])
 
@@ -422,6 +569,11 @@ def main():
     p.add_argument("--timeout", type=float, default=_TIMEOUT_S, metavar="S",
                    help=f"Per-mode timeout in seconds; partial results are printed "
                         f"(default: {_TIMEOUT_S})")
+    p.add_argument("--no-lp", action="store_true",
+                   help="Skip the masserstein/magnetstein LP variants")
+    p.add_argument("--gurobi", action="store_true",
+                   help="Use Gurobi (requires license) for masserstein/magnetstein; "
+                        "default is pulp CBC")
     args = p.parse_args()
 
     tasks = []
@@ -432,7 +584,18 @@ def main():
             for label, mode in _WARM_MODES:
                 tasks.append(("mode", ds, factory, trash, args.approx_runtime,
                                args.timeout, label, mode))
+            if not args.no_lp:
+                for label, magnetstein in _LP_VARIANTS:
+                    tasks.append(("lp", ds, factory, trash, args.approx_runtime,
+                                  args.timeout, label, magnetstein, args.gurobi))
             tasks.append(("grad", ds, factory, trash, args.approx_runtime))
+
+    if args.no_lp:
+        # Drop the LP slots from _TASKS_PER_GROUP so _absorb's count check matches,
+        # and from _MODE_LABELS so _print_group doesn't print "(missing)" rows.
+        global _TASKS_PER_GROUP, _MODE_LABELS
+        _TASKS_PER_GROUP = 1 + len(_WARM_MODES) + 1
+        _MODE_LABELS = [label for label, _ in _WARM_MODES]
 
     n_groups  = len(args.datasets) * len(args.configs)
     n_workers = args.workers or multiprocessing.cpu_count()
