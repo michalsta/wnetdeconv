@@ -96,6 +96,7 @@ class DeconvSolver:
         solver=None,
         force_dense_1d: bool = False,
         precision: float = 1e-3,
+        independent_trash: bool = False,
     ) -> None:
 
         if (
@@ -128,17 +129,21 @@ class DeconvSolver:
         asymmetric = (
             experimental_trash_cost is not None or theoretical_trash_cost is not None
         )
+        # Effective per-side trash costs (fall back to the symmetric trash_cost).
+        # Computed unconditionally so the independent_trash branch below can
+        # reference them even when neither asymmetric cost was given — that case
+        # raises a clean ValueError there rather than an UnboundLocalError here.
+        eff_exp = (
+            experimental_trash_cost
+            if experimental_trash_cost is not None
+            else trash_cost
+        )
+        eff_theo = (
+            theoretical_trash_cost
+            if theoretical_trash_cost is not None
+            else trash_cost
+        )
         if asymmetric:
-            eff_exp = (
-                experimental_trash_cost
-                if experimental_trash_cost is not None
-                else trash_cost
-            )
-            eff_theo = (
-                theoretical_trash_cost
-                if theoretical_trash_cost is not None
-                else trash_cost
-            )
             active_costs = [c for c in (eff_exp, eff_theo) if c is not None]
         else:
             active_costs = [trash_cost]
@@ -246,7 +251,21 @@ class DeconvSolver:
             method=method,
             solver=solver,
         )
-        if asymmetric:
+        if independent_trash:
+            # dualdeconv4: independent abysses (no annihilation discount).  An
+            # unmatched empirical unit costs C_exp and an unfilled theoretical
+            # unit C_theo, charged separately; the match-vs-dump threshold is
+            # C_exp + C_theo (caller must pass max_distance >= MTD + MTD_th so
+            # the matchable arcs exist).
+            if experimental_trash_cost is None or theoretical_trash_cost is None:
+                raise ValueError(
+                    "independent_trash requires both experimental_trash_cost "
+                    "and theoretical_trash_cost."
+                )
+            self.graph.add_independent_asymmetric_trash(
+                int(eff_exp * sf_distance), int(eff_theo * sf_distance)
+            )
+        elif asymmetric:
             if eff_exp is not None:
                 self.graph.add_experimental_trash(int(eff_exp * sf_distance))
             if eff_theo is not None:
@@ -785,13 +804,16 @@ class MassersteinSolver4(_MassersteinBase):
     denoising penalty ``MTD_th`` instead of the +inf-proxy device.  Maps
     directly onto ``dualdeconv4(penalty=MTD, penalty_th=MTD_th)``.
 
-    The transport cap is ``max(MTD, MTD_th)``; transports farther than that
-    are never optimal because the cheaper trash arc on the relevant side is
-    always available.
-
-    See :class:`MassersteinSolver2` for the joint-vs-nested LP caveats; they
-    apply here too, and on dense/degenerate inputs the agreement to
-    ``dualdeconv4`` can drift further than with ``dualdeconv2``.
+    dualdeconv4 has two **independent** abysses (experimental at ``MTD``,
+    theoretical at ``MTD_th``); transport between them costs ``MTD + MTD_th``
+    and never occurs.  This is *not* wnet's default asymmetric trash, which
+    lets an (unmatched-empirical, unfilled-theoretical) pair annihilate at
+    ``min(MTD, MTD_th)`` — that discount inflates ``w`` and dumps forced
+    theoretical mass for free.  We therefore use the network's
+    ``add_independent_asymmetric_trash`` (``independent_trash=True``) and set
+    the transport cap to ``MTD + MTD_th`` so every match that beats dumping
+    both sides exists.  With this, the nested-MCF cost equals dualdeconv4's
+    LP value (the matched/unmatched split and ``w`` agree).
 
     Parameters
     ----------
@@ -826,12 +848,13 @@ class MassersteinSolver4(_MassersteinBase):
             emp,
             theos,
             distance=DistanceMetric.LINF,
-            max_distance=max(MTD, MTD_th),
+            max_distance=MTD + MTD_th,
             experimental_trash_cost=MTD,
             theoretical_trash_cost=MTD_th,
             method=method,
             solver=solver,
             precision=precision,
+            independent_trash=True,
         )
 
 

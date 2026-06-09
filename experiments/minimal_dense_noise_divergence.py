@@ -58,10 +58,10 @@ def score_at_w(exp_sp, thr_sps, w, MTD, quiet=True):
 MTD = 0.05
 
 # Component
-comp = [(100.0, 0.9), (101.0, 0.1)]
+comp = [(100.0, 0.5), (101.0, 0.5)]
 
 # Experimental: signal at 100 and 101, plus ONE noise peak within MTD of 100.
-exp_raw = [(100.00, 0.9 + 0.1), (100.02, 0.5), (101.00, 0.1)]
+exp_raw = [(100.00, 0.9), (101.00, 0.1)]
 tot = sum(i for _, i in exp_raw)
 exp_confs = sorted((m, i / tot) for m, i in exp_raw)
 print("Experimental (normalized):")
