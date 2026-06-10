@@ -10,6 +10,47 @@ from wnet import Distribution, WassersteinNetwork
 _Flow = namedtuple("Flow", ["empirical_peak_idx", "theoretical_peak_idx", "flow"])
 from wnet.distances import DistanceMetric
 
+_INDEPENDENT_TRASH_METHOD = "add_independent_asymmetric_trash"
+
+
+def _wnet_supports_independent_trash() -> bool:
+    """Empirically check whether the installed wnet exposes the independent-abyss
+    trash model that :class:`MassersteinSolver4` requires.
+
+    The C++ method ``add_independent_asymmetric_trash`` only exists on builds from
+    the ``dual_trash_2`` branch; PyPI / ``main`` wnet does not bind it.  We probe
+    the underlying nanobind classes (not the Python wrapper, which forwards
+    dynamically) so this works before any network is constructed.
+    """
+    try:
+        from wnet import wnet_cpp
+    except Exception:
+        return False
+    for cls_name in ("CWassersteinNetwork", "CWassersteinNetworkFloat"):
+        cls = getattr(wnet_cpp, cls_name, None)
+        if cls is not None and hasattr(cls, _INDEPENDENT_TRASH_METHOD):
+            return True
+    return False
+
+
+def _require_independent_trash_support() -> None:
+    """Raise a directive error if the installed wnet lacks independent trash."""
+    if _wnet_supports_independent_trash():
+        return
+    raise RuntimeError(
+        "MassersteinSolver4 (dualdeconv4) requires wnet's independent-abyss trash "
+        "model, but the installed wnet does not expose "
+        f"'{_INDEPENDENT_TRASH_METHOD}'. This feature lives on the 'dual_trash_2' "
+        "branch and is not part of the PyPI / 'main' build. Install wnet from git "
+        "on that branch, e.g.:\n"
+        "    pip install --force-reinstall "
+        "'git+https://github.com/michalsta/wnet.git@dual_trash_2'\n"
+        "or from a local checkout:\n"
+        "    git -C /path/to/wnet checkout dual_trash_2 && pip install -e /path/to/wnet\n"
+        "then rebuild the C++ extension. Use MassersteinSolver2 (dualdeconv2) if you "
+        "do not need the two-sided independent denoising penalty."
+    )
+
 
 class DeconvSolver:
     """
@@ -842,6 +883,7 @@ class MassersteinSolver4(_MassersteinBase):
         solver=None,
         precision: float = 1e-3,
     ) -> None:
+        _require_independent_trash_support()
         emp = empirical_spectrum.normalized()
         theos = [t.normalized() for t in theoretical_spectra]
         super().__init__(
