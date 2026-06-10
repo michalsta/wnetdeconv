@@ -1,5 +1,4 @@
 from typing import Optional
-from functools import cached_property
 
 import numpy as np
 
@@ -9,6 +8,12 @@ from wnet import Distribution
 class Spectrum(Distribution):
     """
     A class representing NMR or MS spectrum data.
+
+    Compared to Distribution, this class retains the original (non-int)
+    intensities in ``original_intensities`` for more precise scaling.  The
+    scaling/normalization helpers (``scaled``, ``positions_intensities_scaled``,
+    ``normalized``, ``as_distribution``, ``sum_intensities``) are inherited from
+    Distribution, whose polymorphic constructor returns a Spectrum here.
     """
 
     def __init__(
@@ -18,10 +23,7 @@ class Spectrum(Distribution):
         label: Optional[str] = None,
     ):
         """
-        Initialize a Spectrum object. Compared to Distribution, this class
-        retains the original intensities (not converted to int) for more precise
-        scaling operations. They are stored in the `original_intensities` attribute.
-        They are still converted to int before running any alignment algorithms.
+        Initialize a Spectrum object.
 
         Parameters
         ----------
@@ -55,75 +57,6 @@ class Spectrum(Distribution):
         # create a Spectrum object
         spectrum = Spectrum(np.array([mzs, rts]), np.array(intensities))
         return spectrum
-
-    @cached_property
-    def sum_intensities(self) -> float:
-        """
-        Return the sum of the original intensities.
-        """
-        return np.sum(self.original_intensities)
-
-    def scaled(self, factor: float) -> "Spectrum":
-        """
-        Return a new Spectrum object with intensities scaled by the given factor.
-
-        Parameters
-        ----------
-        factor : float
-            The scaling factor to apply to the intensities.
-
-        Returns
-        -------
-        Spectrum
-            A new Spectrum object with scaled intensities.
-        """
-        return Spectrum(
-            self.positions, self.original_intensities * factor, label=self.label
-        )
-
-    def positions_intensities_scaled(self, scale_factor: float) -> "Spectrum":
-        """
-        Return a new Spectrum with both positions and intensities scaled by the given factor.
-
-        Parameters
-        ----------
-        scale_factor : float
-            The scaling factor to apply to positions and intensities.
-
-        Returns
-        -------
-        Spectrum
-            A new Spectrum object with scaled positions and intensities.
-        """
-        new_positions = self.positions.astype(np.float64, copy=False) * scale_factor
-        return Spectrum(new_positions, self.original_intensities * scale_factor, label=self.label)
-
-    def normalized(self) -> "Spectrum":
-        """
-        Return a new Spectrum object with intensities normalized to sum to 1.
-
-        Returns
-        -------
-        Spectrum
-            A new Spectrum object with normalized intensities.
-        """
-        total = self.sum_intensities
-        if total == 0:
-            raise ValueError("Cannot normalize a spectrum with total intensity of 0.")
-        return Spectrum(
-            self.positions, self.original_intensities / total, label=self.label
-        )
-
-    def as_distribution(self) -> Distribution:
-        """
-        Convert the Spectrum object to a Distribution object.
-
-        Returns
-        -------
-        Distribution
-            A Distribution object with the same positions and intensities.
-        """
-        return Distribution(self.positions, self.intensities, label=self.label)
 
 
 def Spectrum_1D(
