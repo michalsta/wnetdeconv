@@ -1,5 +1,6 @@
 from typing import Optional
 from functools import cached_property
+from copy import deepcopy
 
 import numpy as np
 
@@ -107,6 +108,102 @@ class Spectrum(Distribution):
             A Distribution object with the same positions and intensities.
         """
         return Distribution(self.positions, self.intensities, label=self.label)
+    
+    def normalize_scaled(self) -> "Spectrum":
+        """
+        Return a new Spectrum object with intensities normalized to sum to 1. 
+        Uses self.intensities not self.original_intensities for normalization in contrast to normalized method.
+
+        Returns
+        -------
+        Spectrum
+            A new Spectrum object with normalized intensities.
+        """
+        total = np.sum(self.intensities)
+        if total == 0:
+            raise ValueError("Cannot normalize a spectrum with total intensity of 0.")
+        return Spectrum(
+            self.positions, self.intensities / total, label=self.label
+        )
+
+    def copy(self):
+        """
+        Return a (deep) copy of self
+        """
+        return deepcopy(self)
+    
+    def sort_signals(self):
+        """
+        Sorts positions and intensities using np.lexsort with the positions as keys.
+        """
+
+        order = np.lexsort(tuple(self.positions[i, :] for i in range(self.positions.shape[0]-1, -1, -1)))
+        self.positions = self.positions[:, order]
+        self.intensities = self.intensities[order]
+        self.original_intensities = self.original_intensities[order]
+
+    def merge_signals(self):
+        """
+        Merges signals with identical positions, summing their intensities.
+        """
+        if len(self.positions) > 0:
+            cpos = self.positions[:, 0]
+            csig = 0.0
+            og_csig = 0.0
+            merged_pos = []
+            merged_sig = []
+            merged_og_sig = []
+            for pos, sig, og_sig in zip(self.positions.T, self.intensities, self.original_intensities):
+                if not np.all(pos == cpos):
+                    merged_pos.append(cpos)
+                    merged_sig.append(csig)
+                    merged_og_sig.append(og_csig)
+                    cpos = pos
+                    csig = 0.0
+                    og_csig = 0.0
+                csig += sig
+                og_csig += og_sig
+            merged_pos.append(cpos)
+            merged_sig.append(csig)
+            merged_og_sig.append(og_csig)
+
+            self.positions = np.array(merged_pos).T
+            self.intensities = np.array(merged_sig)
+            self.original_intensities = np.array(merged_og_sig)
+
+    def set_signals(self, positions, intensities):
+        if len(positions) == 0 or len(intensities) == 0:
+            raise ValueError(
+                "Empty signal positions or intensities"
+            )
+        if positions.shape[1] != intensities.shape[0]:
+            raise ValueError(
+                "Number of signal positions and intensities do not match."
+            )
+        self.positions = positions
+        self.intensities = intensities
+        self.original_intensities = intensities
+        self.sort_confs()
+        self.merge_confs()
+    
+    def __add__(self, other):
+        
+        res = Spectrum(
+            positions = np.hstack((self.positions, other.positions)),
+            intensities = np.hstack((self.intensities, other.intensities)),
+            label = self.label + ' + ' + other.label,
+        )
+        res.sort_signals()
+        res.merge_signals()
+        return res
+
+    def __mul__(self, number):
+        res = Spectrum(
+            positions = self.positions,
+            intensities = number * self.intensities,
+            label = self.label,
+        )
+        return res        
 
 
 def Spectrum_1D(
