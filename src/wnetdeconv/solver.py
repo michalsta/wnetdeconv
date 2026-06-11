@@ -272,11 +272,16 @@ class DeconvSolver:
         self.scale_factor = float(np.sqrt(sf_distance * sf_intensity))
         self._ftol = 1.0 / (sf_distance * sf_intensity)
 
+        # Only positions are scaled here (sf_distance); intensities are passed
+        # through as real values and quantized by the network via the explicit
+        # intensity_scale=sf_intensity below.  This replaces the old pre-scaling
+        # (which truncated intensities to int twice — once at build, once when
+        # weighted by the point) with a single quantization inside the network.
         def _scale_spec(spec):
             new_pos = np.asarray(spec.positions, dtype=np.float64) * sf_distance
-            new_int = (
-                np.asarray(getattr(spec, "original_intensities", spec.intensities),
-                           dtype=np.float64) * sf_intensity
+            new_int = np.asarray(
+                getattr(spec, "original_intensities", spec.intensities),
+                dtype=np.float64,
             )
             return type(spec)(new_pos, new_int, label=spec.label)
 
@@ -291,6 +296,7 @@ class DeconvSolver:
             force_dense_1d=force_dense_1d,
             method=method,
             solver=solver,
+            intensity_scale=sf_intensity,
         )
         if independent_trash:
             # dualdeconv4: independent abysses (no annihilation discount).  An
@@ -339,7 +345,9 @@ class DeconvSolver:
         Returns:
             float: The normalized total cost.
         """
-        return self.graph.total_cost() / (self.sf_distance * self.sf_intensity)
+        # Only undo the position (distance) scaling: the network already unscales
+        # the intensity factor in its total_cost().
+        return self.graph.total_cost() / self.sf_distance
 
     def print(self) -> None:
         """
@@ -384,7 +392,7 @@ class DeconvSolver:
         """
         return (
             self.graph.spectrum_proportion_derivatives().astype(float)
-            / (self.sf_distance * self.sf_intensity)
+            / self.sf_distance
         )
 
     def gradient_fast_approx(self) -> np.ndarray:
@@ -398,7 +406,7 @@ class DeconvSolver:
         """
         return (
             self.graph.spectrum_proportion_derivatives_fast_approx().astype(float)
-            / (self.sf_distance * self.sf_intensity)
+            / self.sf_distance
         )
 
     def optimize(self, x0: Optional[np.ndarray] = None) -> OptimizeResult:
