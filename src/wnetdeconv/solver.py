@@ -279,10 +279,7 @@ class DeconvSolver:
         # weighted by the point) with a single quantization inside the network.
         def _scale_spec(spec):
             new_pos = np.asarray(spec.positions, dtype=np.float64) * sf_distance
-            new_int = np.asarray(
-                getattr(spec, "original_intensities", spec.intensities),
-                dtype=np.float64,
-            )
+            new_int = np.asarray(spec.intensities, dtype=np.float64)
             return type(spec)(new_pos, new_int, label=spec.label)
 
         self.empirical_spectrum = _scale_spec(empirical_spectrum)

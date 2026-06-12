@@ -9,31 +9,11 @@ class Spectrum(Distribution):
     """
     A class representing NMR or MS spectrum data.
 
-    Compared to Distribution, this class retains the original (non-int)
-    intensities in ``original_intensities`` for more precise scaling.  The
-    scaling/normalization helpers (``scaled``, ``positions_intensities_scaled``,
-    ``normalized``, ``as_distribution``, ``sum_intensities``) are inherited from
-    Distribution, whose polymorphic constructor returns a Spectrum here.
+    A thin subclass of Distribution: positions and intensities are owned by the
+    C++ distribution object (real float64), and all scaling/normalization
+    helpers are inherited (Distribution's polymorphic constructor returns a
+    Spectrum here).  The only addition is the MS-specific ``FromFeatureXML``.
     """
-
-    def __init__(
-        self,
-        positions: np.ndarray,
-        intensities: np.ndarray,
-        label: Optional[str] = None,
-    ):
-        """
-        Initialize a Spectrum object.
-
-        Parameters
-        ----------
-        positions : np.ndarray
-            The spatial coordinates of the spectrum (e.g., m/z and RT for MS).
-        intensities : np.ndarray
-            The intensity values corresponding to the spatial coordinates.
-        """
-        self.original_intensities = intensities
-        super().__init__(positions, intensities, label=label)
 
     @staticmethod
     def FromFeatureXML(path):
