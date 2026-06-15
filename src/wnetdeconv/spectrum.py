@@ -17,6 +17,25 @@ class Spectrum(Distribution):
     Spectrum here).  The only addition is the MS-specific ``FromFeatureXML``.
     """
 
+    def __init__(
+        self,
+        positions: np.ndarray,
+        intensities: np.ndarray,
+        label: Optional[str] = None,
+    ):
+        """
+        Initialize a Spectrum object.
+
+        Parameters
+        ----------
+        positions : np.ndarray
+            The spatial coordinates of the spectrum (e.g., m/z and RT for MS).
+        intensities : np.ndarray
+            The intensity values corresponding to the spatial coordinates.
+        """
+        self.original_intensities = intensities
+        super().__init__(positions, intensities, label=label)
+
     @staticmethod
     def FromFeatureXML(path):
         """
