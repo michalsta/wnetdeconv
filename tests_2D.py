@@ -21,7 +21,7 @@ data_path = "data/2DHSQC_abs/spectra"
 print(data_path)
 
 real_spectra = []
-for path in sorted(glob(data_path + "/*.csv")):
+for path in sorted(glob(data_path + "/*.csv.gz")):
     s = load_2d_spectrum(path,
                         max_peak_fraction=MAX_PEAK,
                         # intensity_threshold=0,
