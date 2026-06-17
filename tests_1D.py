@@ -38,10 +38,10 @@ solver = DeconvSolver(
     theoretical_spectra=[s.normalized() for s in spectra[:-1]],
     distance=DistanceMetric.LINF,
     max_distance=MD,
-    trash_cost=TC,
+    # trash_cost=TC,
     experimental_trash_cost = MTD,
     theoretical_trash_cost = MTD_TH,
-    scale_factor=SF,
+    # scale_factor=SF,
 )
 
 # starting point and bounds

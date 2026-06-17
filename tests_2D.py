@@ -17,7 +17,7 @@ MAX_PEAK = 0.01 # 0.001
 MTD = 0.05
 MTD_TH = 0.05
 
-data_path = "data/2DHSQC_abs"
+data_path = "data/2DHSQC_abs/spectra"
 print(data_path)
 
 real_spectra = []
