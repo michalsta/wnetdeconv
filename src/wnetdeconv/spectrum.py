@@ -17,25 +17,6 @@ class Spectrum(Distribution):
     Spectrum here).  The only addition is the MS-specific ``FromFeatureXML``.
     """
 
-    def __init__(
-        self,
-        positions: np.ndarray,
-        intensities: np.ndarray,
-        label: Optional[str] = None,
-    ):
-        """
-        Initialize a Spectrum object.
-
-        Parameters
-        ----------
-        positions : np.ndarray
-            The spatial coordinates of the spectrum (e.g., m/z and RT for MS).
-        intensities : np.ndarray
-            The intensity values corresponding to the spatial coordinates.
-        """
-        self.original_intensities = intensities
-        super().__init__(positions, intensities, label=label)
-
     @staticmethod
     def FromFeatureXML(path):
         """
@@ -59,92 +40,6 @@ class Spectrum(Distribution):
         spectrum = Spectrum(np.array([mzs, rts]), np.array(intensities))
         return spectrum
 
-    @cached_property
-    def sum_intensities(self) -> float:
-        """
-        Return the sum of the original intensities.
-        """
-        return np.sum(self.original_intensities)
-
-    def scaled(self, factor: float) -> "Spectrum":
-        """
-        Return a new Spectrum object with intensities scaled by the given factor.
-
-        Parameters
-        ----------
-        factor : float
-            The scaling factor to apply to the intensities.
-
-        Returns
-        -------
-        Spectrum
-            A new Spectrum object with scaled intensities.
-        """
-        return Spectrum(
-            self.positions, self.original_intensities * factor, label=self.label
-        )
-
-    def positions_intensities_scaled(self, scale_factor: float) -> "Spectrum":
-        """
-        Return a new Spectrum with both positions and intensities scaled by the given factor.
-
-        Parameters
-        ----------
-        scale_factor : float
-            The scaling factor to apply to positions and intensities.
-
-        Returns
-        -------
-        Spectrum
-            A new Spectrum object with scaled positions and intensities.
-        """
-        new_positions = self.positions.astype(np.float64, copy=False) * scale_factor
-        return Spectrum(new_positions, self.original_intensities * scale_factor, label=self.label)
-
-    def normalized(self) -> "Spectrum":
-        """
-        Return a new Spectrum object with intensities normalized to sum to 1.
-
-        Returns
-        -------
-        Spectrum
-            A new Spectrum object with normalized intensities.
-        """
-        total = self.sum_intensities
-        if total == 0:
-            raise ValueError("Cannot normalize a spectrum with total intensity of 0.")
-        return Spectrum(
-            self.positions, self.original_intensities / total, label=self.label
-        )
-
-    def as_distribution(self) -> Distribution:
-        """
-        Convert the Spectrum object to a Distribution object.
-
-        Returns
-        -------
-        Distribution
-            A Distribution object with the same positions and intensities.
-        """
-        return Distribution(self.positions, self.intensities, label=self.label)
-    
-    def normalize_scaled(self) -> "Spectrum":
-        """
-        Return a new Spectrum object with intensities normalized to sum to 1. 
-        Uses self.intensities not self.original_intensities for normalization in contrast to normalized method.
-
-        Returns
-        -------
-        Spectrum
-            A new Spectrum object with normalized intensities.
-        """
-        total = np.sum(self.intensities)
-        if total == 0:
-            raise ValueError("Cannot normalize a spectrum with total intensity of 0.")
-        return Spectrum(
-            self.positions, self.intensities / total, label=self.label
-        )
-
     def copy(self):
         """
         Return a (deep) copy of self
@@ -157,9 +52,11 @@ class Spectrum(Distribution):
         """
 
         order = np.lexsort(tuple(self.positions[i, :] for i in range(self.positions.shape[0]-1, -1, -1)))
-        self.positions = self.positions[:, order]
-        self.intensities = self.intensities[order]
-        self.original_intensities = self.original_intensities[order]
+        return Spectrum(
+            positions = self.positions[:, order],
+            intensities = self.intensities[order],
+            label = self.label,
+        )
 
     def merge_signals(self):
         """
@@ -168,42 +65,56 @@ class Spectrum(Distribution):
         if len(self.positions) > 0:
             cpos = self.positions[:, 0]
             csig = 0.0
-            og_csig = 0.0
             merged_pos = []
             merged_sig = []
-            merged_og_sig = []
-            for pos, sig, og_sig in zip(self.positions.T, self.intensities, self.original_intensities):
+            for pos, sig in zip(self.positions.T, self.intensities):
                 if not np.all(pos == cpos):
                     merged_pos.append(cpos)
                     merged_sig.append(csig)
-                    merged_og_sig.append(og_csig)
                     cpos = pos
                     csig = 0.0
-                    og_csig = 0.0
                 csig += sig
-                og_csig += og_sig
             merged_pos.append(cpos)
             merged_sig.append(csig)
-            merged_og_sig.append(og_csig)
 
-            self.positions = np.array(merged_pos).T
-            self.intensities = np.array(merged_sig)
-            self.original_intensities = np.array(merged_og_sig)
+            positions = np.array(merged_pos).T
+            intensities = np.array(merged_sig)
 
-    def set_signals(self, positions, intensities):
-        if len(positions) == 0 or len(intensities) == 0:
-            raise ValueError(
-                "Empty signal positions or intensities"
+            return Spectrum(
+                positions = positions,
+                intensities = intensities,
+                label = self.label,
             )
-        if positions.shape[1] != intensities.shape[0]:
-            raise ValueError(
-                "Number of signal positions and intensities do not match."
-            )
-        self.positions = positions
-        self.intensities = intensities
-        self.original_intensities = intensities
-        self.sort_confs()
-        self.merge_confs()
+        
+    def sort_positions_and_intensities(self):
+
+        """
+        Sorts positions and intensities using np.lexsort with the positions as keys. Returns sorted positions and intensities
+        """
+
+        order = np.lexsort(tuple(self.positions[i, :] for i in range(self.positions.shape[0]-1, -1, -1)))
+        sorted_positions = self.positions[:, order]
+        sorted_intensities = self.positions[:, order]
+        return sorted_positions, sorted_intensities
+
+    
+    def merge_positions_and_intensities(self):
+        pass
+
+
+    # def set_signals(self, positions, intensities):
+    #     if len(positions) == 0 or len(intensities) == 0:
+    #         raise ValueError(
+    #             "Empty signal positions or intensities"
+    #         )
+    #     if positions.shape[1] != intensities.shape[0]:
+    #         raise ValueError(
+    #             "Number of signal positions and intensities do not match."
+    #         )
+    #     self.positions = positions
+    #     self.intensities = intensities
+    #     self.sort_confs()
+    #     self.merge_confs()
     
     def __add__(self, other):
         
@@ -212,8 +123,10 @@ class Spectrum(Distribution):
             intensities = np.hstack((self.intensities, other.intensities)),
             label = self.label + ' + ' + other.label,
         )
-        res.sort_signals()
-        res.merge_signals()
+        # res.sort_signals()
+        # res.merge_signals()
+        res = res.sort_signals()
+        res = res.merge_signals()
         return res
 
     def __mul__(self, number):
