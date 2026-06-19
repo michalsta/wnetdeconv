@@ -1,13 +1,13 @@
 [build-system]
-requires = ["scikit-build-core", "nanobind", "pylmcf", "wnet>=1.1.0"]
+requires = ["scikit-build-core", "nanobind", "pylmcf", "wnet>=1.1.1"]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "wnetdeconv"
-version = "0.9.1"
+version = "0.9.2"
 description = "Python implementation of spectral deconvolution using Wasserstein metric"
 requires-python = ">=3.9"
-dependencies = ["pylmcf", "numpy", "scipy", "wnet>=1.1.0"]
+dependencies = ["pylmcf", "numpy", "scipy", "wnet>=1.1.1"]
 authors = [{ name="Michał Startek", email="michal.startek@mimuw.edu.pl" }]
 maintainers = [{ name="Michał Startek", email="michal.startek@mimuw.edu.pl" }]
 readme = "README.md"
