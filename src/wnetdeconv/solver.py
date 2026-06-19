@@ -1,11 +1,10 @@
-import warnings
 from collections import namedtuple
 from collections.abc import Sequence
 from typing import Callable, Optional, Union, List, Tuple
 import numpy as np
 from scipy.optimize import minimize, OptimizeResult
 
-from wnet import Distribution, WassersteinNetwork
+from wnet import Distribution, WassersteinNetwork, Scaler
 
 _Flow = namedtuple("Flow", ["empirical_peak_idx", "theoretical_peak_idx", "flow"])
 from wnet.distances import DistanceMetric
@@ -93,6 +92,14 @@ class DeconvSolver:
         In 1D, force the O(m*n) dense factory instead of the O(m+n) chain
         factory (default False = chain in 1D).  Forwarded to
         :class:`WassersteinNetwork`.
+    allow_intensity_loss : bool, optional
+        Intensities are quantized to integer supplies as
+        ``int(intensity * sf_intensity)``; peaks below one integer unit floor to
+        zero and vanish from the transport network.  Some loss is expected, but
+        a too-small scale can silently drop almost everything.  By default, if
+        quantization would discard more than 5% of any spectrum's total
+        intensity, construction raises ``ValueError``.  Set ``True`` to skip the
+        check and proceed anyway.  Default False.
 
     Attributes
     ----------
@@ -138,6 +145,7 @@ class DeconvSolver:
         force_dense_1d: bool = False,
         precision: float = 1e-3,
         independent_trash: bool = False,
+        allow_intensity_loss: bool = False,
     ) -> None:
 
         if (
@@ -189,112 +197,46 @@ class DeconvSolver:
         else:
             active_costs = [trash_cost]
 
-        ALMOST_MAXINT = 2**60
-        empirical_sum_intensity = empirical_spectrum.sum_intensities
-        theoretical_sum_intensity = sum(
-            t.sum_intensities for t in theoretical_spectra
+        # Scaling lives in two clean places:
+        #   * intensity quantization — wnet.Scaler computes the intensity scale
+        #     (precision policy); the network applies it via intensity_scale;
+        #   * cost/distance quantization — the network itself, via cost scaling
+        #     (set_cost_scaling) on real distances, so no position pre-scaling.
+        # `allow_intensity_loss` relaxes the Scaler's intensity-loss guard.
+        scaler = Scaler(
+            empirical_spectrum,
+            theoretical_spectra,
+            distance,
+            max_distance,
+            active_costs,
+            precision=precision,
+            explicit_scale_factor=float(scale_factor) if scale_factor else 0.0,
+            max_dropped_fraction=(1.0 if allow_intensity_loss else 0.05),
         )
-        max_sum_intensity = max(empirical_sum_intensity, theoretical_sum_intensity)
-        max_cost_per_unit_flow = max([max_distance] + active_costs)
-        min_cost_per_unit_flow = min([max_distance] + active_costs)
+        self.sf_intensity = sf_intensity = scaler.sf_intensity()
+        # Cost scale: explicit when the user passed scale_factor (matching the
+        # old "both factors equal" behaviour), else 0 = auto (the network picks
+        # it, coupled with the intensity scale against the int64 budget).
+        cost_scale = int(scale_factor) if scale_factor else 0
 
-        if scale_factor is None:
-            # The cost integer is sum(int_flow * int_dist), with int_flow ≈
-            # flow*sf_intensity and int_dist ≈ dist*sf_distance.  The two
-            # scaling factors are independent — distance scaling controls
-            # quantization of per-arc distances (applied after the metric, so
-            # int_dist = int(dist * sf_distance)); intensity scaling controls
-            # quantization of per-peak intensities (int_intensity =
-            # int(intensity * sf_intensity)).  They affect different sources
-            # of quantization error, so they are tuned separately from
-            # `precision`.
-            #
-            # Distance: per-arc absolute distance error is 1/sf_distance.  To
-            # keep the relative cost error per arc at most `precision`, the
-            # bucket size 1/sf_distance must be ≤ precision * min_cost (the
-            # smallest cost-per-unit-flow in use — typically MTD or the trash
-            # cost).  Inverting:
-            #   sf_distance = 1 / (precision * min_cost_per_unit_flow)
-            # which gives int(min_cost * sf_distance) = 1/precision integer
-            # ticks within the smallest cost class.
-            sf_distance = 1.0 / (precision * min_cost_per_unit_flow)
-
-            # Intensity: per-arc absolute intensity error is 1/sf_intensity.
-            # Choose sf_intensity so that int(total_intensity) = 1/precision
-            # discrete flow levels.  Inverting:
-            #   sf_intensity = 1 / (precision * max_sum_intensity).
-            sf_intensity = 1.0 / (precision * max_sum_intensity)
-
-            # int64 cap: per-arc int cost ≤ max_cost * sf_distance *
-            # max_sum_intensity * sf_intensity = (sf_distance * sf_intensity)
-            # * (max_cost * max_sum_intensity).  Cap so total fits in 2^60.
-            cap_product = ALMOST_MAXINT / (
-                max_cost_per_unit_flow * max_sum_intensity
-            )
-            product = sf_distance * sf_intensity
-            if product > cap_product:
-                shrink = np.sqrt(cap_product / product)
-                sf_distance *= shrink
-                sf_intensity *= shrink
-                warnings.warn(
-                    f"Requested precision {precision} exceeds int64 capacity "
-                    f"for this dataset (max_cost={max_cost_per_unit_flow:.3g}, "
-                    f"max_sum_intensity={max_sum_intensity:.3g}); shrinking "
-                    f"sf_distance/sf_intensity by {shrink:.3g}.  Achieved "
-                    f"relative precision ~{precision/shrink:.2e}."
-                )
-            assert sf_distance > 0 and sf_intensity > 0, (
-                "Can't auto-compute sensible sf_distance/sf_intensity. "
-                "You might have some luck with setting scale_factor manually, "
-                "but it probably means something about your data or trash_cost "
-                "is off."
-            )
-            if int(min_cost_per_unit_flow * sf_distance) < 1:
-                raise ValueError(
-                    f"Auto-computed sf_distance={sf_distance:.3g} cannot "
-                    f"represent min_cost_per_unit_flow={min_cost_per_unit_flow:.3g} "
-                    f"as a positive integer (the graph would have no edges).  "
-                    f"empirical_sum_intensity={empirical_sum_intensity:.3g}, "
-                    f"theoretical_sum_intensity={theoretical_sum_intensity:.3g}.  "
-                    f"Normalize the spectra, pass an explicit scale_factor, or "
-                    f"relax precision."
-                )
-        else:
-            # Backwards-compat: explicit scale_factor sets both factors equal.
-            sf_distance = float(scale_factor)
-            sf_intensity = float(scale_factor)
-
-        self.sf_distance = sf_distance
-        self.sf_intensity = sf_intensity
-        # Compatibility alias.  When auto-computed the factors are unequal;
-        # `scale_factor` then reports the geometric mean (matches the legacy
-        # quadratic unscaling factor sf_distance*sf_intensity = scale_factor^2).
-        self.scale_factor = float(np.sqrt(sf_distance * sf_intensity))
-        self._ftol = 1.0 / (sf_distance * sf_intensity)
-
-        # Only positions are scaled here (sf_distance); intensities are passed
-        # through as real values and quantized by the network via the explicit
-        # intensity_scale=sf_intensity below.  This replaces the old pre-scaling
-        # (which truncated intensities to int twice — once at build, once when
-        # weighted by the point) with a single quantization inside the network.
-        def _scale_spec(spec):
-            new_pos = np.asarray(spec.positions, dtype=np.float64) * sf_distance
-            new_int = np.asarray(spec.intensities, dtype=np.float64)
-            return type(spec)(new_pos, new_int, label=spec.label)
-
-        self.empirical_spectrum = _scale_spec(empirical_spectrum)
-        self.theoretical_spectra = [_scale_spec(t) for t in theoretical_spectra]
+        # Real positions and real costs throughout — the network quantizes costs
+        # to integers internally; nothing is pre-scaled here.
+        self.empirical_spectrum = empirical_spectrum
+        self.theoretical_spectra = list(theoretical_spectra)
 
         self.graph = WassersteinNetwork(
-            self.empirical_spectrum,
-            self.theoretical_spectra,
+            empirical_spectrum,
+            theoretical_spectra,
             distance,
-            int(max_distance * sf_distance),
+            max_distance,
             force_dense_1d=force_dense_1d,
             method=method,
             solver=solver,
             intensity_scale=sf_intensity,
+            round_max_distance=False,
         )
+        # Enable cost scaling so p == 1 carries real fractional distances.
+        self.graph.set_cost_scaling(cost_scale)
         if independent_trash:
             # dualdeconv4: independent abysses (no annihilation discount).  An
             # unmatched empirical unit costs C_exp and an unfilled theoretical
@@ -306,17 +248,18 @@ class DeconvSolver:
                     "independent_trash requires both experimental_trash_cost "
                     "and theoretical_trash_cost."
                 )
-            self.graph.add_independent_asymmetric_trash(
-                int(eff_exp * sf_distance), int(eff_theo * sf_distance)
-            )
+            self.graph.add_independent_asymmetric_trash(eff_exp, eff_theo)
         elif asymmetric:
             if eff_exp is not None:
-                self.graph.add_experimental_trash(int(eff_exp * sf_distance))
+                self.graph.add_experimental_trash(eff_exp)
             if eff_theo is not None:
-                self.graph.add_theoretical_trash(int(eff_theo * sf_distance))
+                self.graph.add_theoretical_trash(eff_theo)
         else:
-            self.graph.add_simple_trash(int(trash_cost * sf_distance))
+            self.graph.add_simple_trash(trash_cost)
         self.graph.build()
+        # Reported factors (the cost scale is chosen at build()).
+        self.scale_factor = self.graph.scale_factor()
+        self._ftol = 1.0 / (self.graph.scale_factor() * sf_intensity)
         self.point = None
 
     def set_point(self, point: Union[Sequence[float], np.ndarray]) -> None:
@@ -342,9 +285,9 @@ class DeconvSolver:
         Returns:
             float: The normalized total cost.
         """
-        # Only undo the position (distance) scaling: the network already unscales
-        # the intensity factor in its total_cost().
-        return self.graph.total_cost() / self.sf_distance
+        # The network returns the real (unscaled) cost: it divides the scaled
+        # integer cost by scale_factor() * intensity_scale_factor().
+        return self.graph.total_cost()
 
     def print(self) -> None:
         """
@@ -387,10 +330,9 @@ class DeconvSolver:
         np.ndarray
             Array of partial derivatives, one per theoretical spectrum.
         """
-        return (
-            self.graph.spectrum_proportion_derivatives().astype(float)
-            / self.sf_distance
-        )
+        # The network wrapper already returns derivatives in real units
+        # (un-scaled by its cost scale_factor()).
+        return self.graph.spectrum_proportion_derivatives().astype(float)
 
     def gradient_fast_approx(self) -> np.ndarray:
         """Fast, APPROXIMATE gradient (dual-potential difference instead of the
@@ -401,10 +343,7 @@ class DeconvSolver:
         marginal, exact only on the optimal flow support.  Opt-in; do not use
         as a drop-in replacement for gradient() without validating convergence.
         """
-        return (
-            self.graph.spectrum_proportion_derivatives_fast_approx().astype(float)
-            / self.sf_distance
-        )
+        return self.graph.spectrum_proportion_derivatives_fast_approx().astype(float)
 
     def optimize(self, x0: Optional[np.ndarray] = None) -> OptimizeResult:
         """
