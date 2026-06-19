@@ -4,7 +4,8 @@ from typing import Callable, Optional, Union, List, Tuple
 import numpy as np
 from scipy.optimize import minimize, OptimizeResult
 
-from wnet import Distribution, WassersteinNetwork, Scaler
+from wnet import Distribution, WassersteinNetwork
+from wnet.scaling import WNetDeconvScaler
 
 _Flow = namedtuple("Flow", ["empirical_peak_idx", "theoretical_peak_idx", "flow"])
 from wnet.distances import DistanceMetric
@@ -188,9 +189,7 @@ class DeconvSolver:
             else trash_cost
         )
         eff_theo = (
-            theoretical_trash_cost
-            if theoretical_trash_cost is not None
-            else trash_cost
+            theoretical_trash_cost if theoretical_trash_cost is not None else trash_cost
         )
         if asymmetric:
             active_costs = [c for c in (eff_exp, eff_theo) if c is not None]
@@ -198,26 +197,27 @@ class DeconvSolver:
             active_costs = [trash_cost]
 
         # Scaling lives in two clean places:
-        #   * intensity quantization — wnet.Scaler computes the intensity scale
-        #     (precision policy); the network applies it via intensity_scale;
-        #   * cost/distance quantization — the network itself, via cost scaling
-        #     (set_cost_scaling) on real distances, so no position pre-scaling.
-        # `allow_intensity_loss` relaxes the Scaler's intensity-loss guard.
-        scaler = Scaler(
-            empirical_spectrum,
-            theoretical_spectra,
-            distance,
-            max_distance,
-            active_costs,
-            precision=precision,
-            explicit_scale_factor=float(scale_factor) if scale_factor else 0.0,
-            max_dropped_fraction=(1.0 if allow_intensity_loss else 0.05),
-        )
-        self.sf_intensity = sf_intensity = scaler.sf_intensity()
-        # Cost scale: explicit when the user passed scale_factor (matching the
-        # old "both factors equal" behaviour), else 0 = auto (the network picks
-        # it, coupled with the intensity scale against the int64 budget).
-        cost_scale = int(scale_factor) if scale_factor else 0
+        #   * intensity quantization — computed below; network applies it via
+        #     intensity_scale;
+        #   * cost/distance quantization — the network itself via set_cost_scaling
+        #     on real distances, so no position pre-scaling needed.
+        if scale_factor:
+            # Explicit override: use sf_intensity directly (both sf_distance and
+            # sf_intensity equal to scale_factor, matching old behaviour).
+            sf_intensity = float(scale_factor)
+            cost_scale = int(scale_factor)
+        else:
+            scaler = WNetDeconvScaler(
+                empirical_spectrum,
+                theoretical_spectra,
+                distance,
+                max_distance,
+                active_costs,
+                max_dropped_fraction=(1.0 if allow_intensity_loss else 0.20),
+            )
+            sf_intensity = scaler.sf_intensity()
+            cost_scale = 0  # auto — network picks cost scale against int64 budget
+        self.sf_intensity = sf_intensity
 
         # Real positions and real costs throughout — the network quantizes costs
         # to integers internally; nothing is pre-scaled here.
@@ -317,7 +317,11 @@ class DeconvSolver:
             empirical_peak_idx, theoretical_peak_idx, flow = (
                 self.graph.flows_for_target(i)
             )
-            result.append(_Flow(empirical_peak_idx, theoretical_peak_idx, flow / self.sf_intensity))
+            result.append(
+                _Flow(
+                    empirical_peak_idx, theoretical_peak_idx, flow / self.sf_intensity
+                )
+            )
         return result
 
     def gradient(self) -> np.ndarray:
@@ -422,7 +426,10 @@ class DeconvSolver:
         print("No matching edges:", self.graph.count_matching_edges())
         print("No chain edges:", self.graph.count_chain_edges())
         print("No src-to-empirical edges:", self.graph.count_src_to_empirical_edges())
-        print("No theoretical-to-sink edges:", self.graph.count_theoretical_to_sink_edges())
+        print(
+            "No theoretical-to-sink edges:",
+            self.graph.count_theoretical_to_sink_edges(),
+        )
         print("No simple trash edges:", self.graph.count_simple_trash_edges())
         print("Matching density:", self.graph.matching_density())
         print(
@@ -439,7 +446,9 @@ class DeconvSolver:
             print("  No. matching edges:", s.count_matching_edges())
             print("  No. chain edges:", s.count_chain_edges())
             print("  No. src-to-empirical edges:", s.count_src_to_empirical_edges())
-            print("  No. theoretical-to-sink edges:", s.count_theoretical_to_sink_edges())
+            print(
+                "  No. theoretical-to-sink edges:", s.count_theoretical_to_sink_edges()
+            )
             print("  No. simple trash edges:", s.count_simple_trash_edges())
             print("  Cost:", s.total_cost())
             print("  Matching density:", s.matching_density())
@@ -659,11 +668,13 @@ class _MassersteinBase(DeconvSolver):
             x_init = result.x
             if x_init.sum() > 1.0:
                 x_init = x_init / x_init.sum()  # project onto sum=1
-            constraints = [{
-                "type": "ineq",
-                "fun": lambda w: 1.0 - w.sum(),
-                "jac": lambda w: -np.ones(n),
-            }]
+            constraints = [
+                {
+                    "type": "ineq",
+                    "fun": lambda w: 1.0 - w.sum(),
+                    "jac": lambda w: -np.ones(n),
+                }
+            ]
             result = minimize(
                 cost_and_grad,
                 x0=x_init,
@@ -671,12 +682,14 @@ class _MassersteinBase(DeconvSolver):
                 method="SLSQP",
                 bounds=[(0.0, None)] * n,
                 constraints=constraints,
-                options={"maxiter": 2000,
-                         "ftol": min(self._ftol, self._FTOL_CEILING)},
+                options={"maxiter": 2000, "ftol": min(self._ftol, self._FTOL_CEILING)},
             )
-        return {"probs": list(result.x), "fun": result.fun,
-                "success": result.success,
-                "on_simplex_face": on_simplex_face}
+        return {
+            "probs": list(result.x),
+            "fun": result.fun,
+            "success": result.success,
+            "on_simplex_face": on_simplex_face,
+        }
 
 
 class MassersteinSolver2(_MassersteinBase):
@@ -859,11 +872,20 @@ def MassersteinSolver(
     New code should instantiate the explicit class."""
     if MTD_th is None:
         return MassersteinSolver2(
-            empirical_spectrum, theoretical_spectra, MTD=MTD,
+            empirical_spectrum,
+            theoretical_spectra,
+            MTD=MTD,
             theo_trash_mult=theo_trash_mult,
-            method=method, solver=solver, precision=precision,
+            method=method,
+            solver=solver,
+            precision=precision,
         )
     return MassersteinSolver4(
-        empirical_spectrum, theoretical_spectra, MTD=MTD, MTD_th=MTD_th,
-        method=method, solver=solver, precision=precision,
+        empirical_spectrum,
+        theoretical_spectra,
+        MTD=MTD,
+        MTD_th=MTD_th,
+        method=method,
+        solver=solver,
+        precision=precision,
     )
