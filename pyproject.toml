@@ -36,6 +36,7 @@ exclude = [
     ".github/",
     "experiments/",
     "pytest/",
+    "data/",
     "optimization_example.py",
     "reinstall.sh",
     ".gitignore",
