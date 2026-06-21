@@ -6,13 +6,12 @@ from scipy.optimize import minimize
 
 from glob import glob
 
-from utils import load_magnetstein_spectra
-from utils import load_2d_spectrum
+from utils import load_1d_spectrum
 
 # 1D test using magnestein data 
 print("1D test")
-n = 2 # experiment number
-data_path = f"data/Magnestein/e{3}"
+n = 3 # experiment number
+data_path = f"data/Magnestein/e{n}"
 print(data_path)
 
 MD = 0.25 
@@ -20,17 +19,18 @@ TC = 0.25 # trash cost, for 1 trash set-up
 MTD = 0.25 # kappa_mixture
 MTD_TH = 0.22 # kappa_components
 SF = None # scaling factor
+# SF = 1e5
 
 print(f"e{n}, max-distance={MD}, trash_cost={TC}, mtd={MTD}, mtd_th={MTD_TH}, scale_factor={SF}")
 
 # Load spectra (the last one is mixture)
 spectra = []
 for path in sorted(glob(data_path + "/*.csv")):
-    s = load_magnetstein_spectra(path,
-                                max_peak_fraction=0.01,
-                                # intensity_threshold=0,
-                                # verbose=True,
-                                )
+    s = load_1d_spectrum(path,
+                         max_peak_fraction=0.01,
+                         # intensity_threshold=0,
+                         # # verbose=True,
+                         )
     spectra.append(s)
 
 solver = DeconvSolver(
@@ -41,7 +41,7 @@ solver = DeconvSolver(
     # trash_cost=TC,
     experimental_trash_cost = MTD,
     theoretical_trash_cost = MTD_TH,
-    # scale_factor=SF,
+    scale_factor=SF,
 )
 
 # starting point and bounds
@@ -58,8 +58,8 @@ def cost_and_grad(point):
     solver.set_point(point)
     c = solver.total_cost()
     g = solver.gradient()
-    # print(f"step {step[0]:3d}  point=[{point[0]:8.4f}, {point[1]:8.4f}]  cost={c:12.4f}  grad=[{g[0]:10.4f}, {g[1]:10.4f}]")
-    if step[0]%5==0: print(f"step {step[0]:3d}  point=[{' '.join(f"{x:8.4f}," for x in point)}]  cost={c:8.4f}  grad=[{' '.join(f"{x:8.4f}," for x in g)}]")
+    print(f"step {step[0]:3d}  point=[{' '.join(f"{x:8.4f}," for x in point)}]  cost={c:8.4f}  grad=[{' '.join(f"{x:8.4f}," for x in g)}]")
+    # if step[0]%5==0: print(f"step {step[0]:3d}  point=[{' '.join(f"{x:8.4f}," for x in point)}]  cost={c:8.4f}  grad=[{' '.join(f"{x:8.4f}," for x in g)}]")
     step[0] += 1
     return c, g
 

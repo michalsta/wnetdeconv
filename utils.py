@@ -4,10 +4,9 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-# from wnetdeconv import Spectrum_1D, Spectrum
 from wnetdeconv.spectrum import Spectrum_1D, Spectrum
 
-def load_magnetstein_spectra(path,
+def load_1d_spectrum(path,
                             max_peak_fraction=None, #0.1
                             intensity_threshold=0, #0.01
                             verbose=False,
