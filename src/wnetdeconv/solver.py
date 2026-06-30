@@ -481,7 +481,7 @@ class ConstrainedSolver(DeconvSolver):
             [t.sum_intensities for t in self.theoretical_spectra]
         )
 
-    def optimize(self, x0: Optional[np.ndarray] = None) -> OptimizeResult:
+    def optimize(self, x0: Optional[np.ndarray] = None, bounds: Optional[np.array] = None) -> OptimizeResult:
         """
         Minimize total transport cost subject to the total-mass constraint.
 
@@ -500,6 +500,8 @@ class ConstrainedSolver(DeconvSolver):
         if x0 is None:
             w0 = self._emp_total / self._theo_totals.sum()
             x0 = np.full(n, w0)
+        if bounds is None:
+            bounds = [(0.0, None)] * n
 
         def cost_and_grad(w):
             self.set_point(w)
@@ -516,7 +518,7 @@ class ConstrainedSolver(DeconvSolver):
             x0=x0,
             jac=True,
             method="SLSQP",
-            bounds=[(0.0, None)] * n,
+            bounds=bounds,
             constraints=constraint,
             options={"maxiter": 2000, "ftol": self._ftol},
         )
