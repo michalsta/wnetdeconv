@@ -224,6 +224,23 @@ class DeconvSolver:
         self.empirical_spectrum = empirical_spectrum
         self.theoretical_spectra = list(theoretical_spectra)
 
+        # Shared-grid profile data (all spectra on one identical position
+        # grid, e.g. profile-mode NMR) builds one giant chain per connected
+        # region; there the warm-restart dual repair degrades into long
+        # bound-flip walks and loses 2-5x to plain cold restarts, so disable
+        # it (warm_violation_limit=0).  Centroided/peak-list data keeps
+        # repair, where it wins (PBTTT ~4x).  Only applied when the limit is
+        # still the -2 auto default, so explicit user settings are honoured.
+        from wnet.wnet_cpp import NetworkSimplex as _NSConfig
+        if solver is None and method is None:
+            solver = _NSConfig()
+        if (
+            isinstance(solver, _NSConfig)
+            and solver.warm_violation_limit == -2
+            and self._all_spectra_share_grid()
+        ):
+            solver.warm_violation_limit = 0
+
         self.graph = WassersteinNetwork(
             empirical_spectrum,
             theoretical_spectra,
@@ -261,6 +278,15 @@ class DeconvSolver:
         self.scale_factor = self.graph.scale_factor()
         self._ftol = 1.0 / (self.graph.scale_factor() * sf_intensity)
         self.point = None
+
+    def _all_spectra_share_grid(self) -> bool:
+        """True if every theoretical spectrum sits on the empirical spectrum's
+        exact position grid (profile-mode data)."""
+        emp_pos = np.asarray(self.empirical_spectrum.positions)
+        return all(
+            np.array_equal(emp_pos, np.asarray(t.positions))
+            for t in self.theoretical_spectra
+        )
 
     def set_point(self, point: Union[Sequence[float], np.ndarray]) -> None:
         """
