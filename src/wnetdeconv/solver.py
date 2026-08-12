@@ -224,22 +224,27 @@ class DeconvSolver:
         self.empirical_spectrum = empirical_spectrum
         self.theoretical_spectra = list(theoretical_spectra)
 
-        # Shared-grid profile data (all spectra on one identical position
-        # grid, e.g. profile-mode NMR) builds one giant chain per connected
-        # region; there the warm-restart dual repair degrades into long
-        # bound-flip walks and loses 2-5x to plain cold restarts, so disable
-        # it (warm_violation_limit=0).  Centroided/peak-list data keeps
-        # repair, where it wins (PBTTT ~4x).  Only applied when the limit is
-        # still the -2 auto default, so explicit user settings are honoured.
-        from wnet.wnet_cpp import NetworkSimplex as _NSConfig
-        if solver is None and method is None:
-            solver = _NSConfig()
-        if (
-            isinstance(solver, _NSConfig)
-            and solver.warm_violation_limit == -2
-            and self._all_spectra_share_grid()
-        ):
-            solver.warm_violation_limit = 0
+        # 1-D data goes through wnet's chain factory, where the exact
+        # chain-native SlopeDP solver beats NetworkSimplex on every measured
+        # workload (bit-exact costs): shared-grid profile NMR by ~200x+
+        # (pinene 70k: 21.7 min -> 6.8 s end-to-end), and centroided MS too
+        # (hemoglobin 2.3x, PBTTT 1.5x vs warm-repair NS).  Default to it
+        # whenever the caller did not pick a solver.
+        # If the caller insists on NetworkSimplex on shared-grid profile
+        # data, its warm-restart dual repair degrades into long bound-flip
+        # walks (2-5x slower than plain cold restarts), so disable repair
+        # (warm_violation_limit=0) unless explicitly configured; centroided
+        # data keeps repair, which wins there (PBTTT ~4x).
+        from wnet.wnet_cpp import NetworkSimplex as _NSConfig, SlopeDP as _SlopeDP
+        if empirical_spectrum.dimension == 1 and not force_dense_1d:
+            if solver is None and method is None:
+                solver = _SlopeDP()
+            elif (
+                isinstance(solver, _NSConfig)
+                and solver.warm_violation_limit == -2
+                and self._all_spectra_share_grid()
+            ):
+                solver.warm_violation_limit = 0
 
         self.graph = WassersteinNetwork(
             empirical_spectrum,
