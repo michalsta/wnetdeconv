@@ -74,11 +74,12 @@ class DeconvSolver:
     scale_factor : None, int, or float, optional
         Scaling factor for intensities and costs. If None, it is computed from ``precision``.
     precision : float, optional
-        Desired relative precision of the cost output (fraction of the theoretical cost
-        upper bound ``max_cost_per_unit_flow * max_sum_intensity``).  Drives both the
-        auto scale_factor and the ``ftol`` stop criterion passed to scipy optimizers.
-        Ignored when ``scale_factor`` is supplied explicitly.  Default 1e-3 (≈ 3
-        significant figures).
+        Deprecated, no effect.  Historically drove the auto scale_factor
+        (``sf = 1/sqrt(precision * cost_bound)``); the p95-quantile
+        ``WNetDeconvScaler`` policy replaced that, and ``ftol`` is now derived
+        from the actual scale factors.  Accepted for backward compatibility;
+        a non-default value triggers a DeprecationWarning.  Use
+        ``scale_factor`` to override quantization explicitly.
     experimental_trash_cost : int or float, optional
         Cost for discarding unmatched empirical peaks. Enables asymmetric trash mode.
     theoretical_trash_cost : int or float, optional
@@ -175,6 +176,16 @@ class DeconvSolver:
                 raise TypeError(f"{name} must be a number")
         if scale_factor is not None and not isinstance(scale_factor, (int, float)):
             raise TypeError("scale_factor must be a number")
+        if precision != 1e-3:
+            import warnings
+
+            warnings.warn(
+                "DeconvSolver's `precision` parameter is deprecated and has no "
+                "effect (the WNetDeconvScaler p95 policy replaced it); pass "
+                "scale_factor to override quantization instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
         asymmetric = (
             experimental_trash_cost is not None or theoretical_trash_cost is not None
@@ -244,7 +255,14 @@ class DeconvSolver:
                 and solver.warm_violation_limit == -2
                 and self._all_spectra_share_grid()
             ):
-                solver.warm_violation_limit = 0
+                # Apply the shared-grid policy to a copy — mutating the
+                # caller's config object would leak the override into any
+                # other solver built from it.
+                cfg = _NSConfig()
+                cfg.pivot = solver.pivot
+                cfg.warm = solver.warm
+                cfg.warm_violation_limit = 0
+                solver = cfg
 
         self.graph = WassersteinNetwork(
             empirical_spectrum,
@@ -641,8 +659,8 @@ class _MassersteinBase(DeconvSolver):
     wrong sign for the KKT test.  The run-then-check above sidesteps that.
     Both inner solves clamp their tolerance to a safe ceiling so the cheap
     relative-change-stopping rules don't terminate on flat-plateau regions
-    before the optimum is reached (the auto ``self._ftol`` derived from
-    ``precision`` is calibrated for cost-output accuracy, not optimiser
+    before the optimum is reached (the auto ``self._ftol`` derived from the
+    scale factors is calibrated for cost-output accuracy, not optimiser
     stopping).
     """
 

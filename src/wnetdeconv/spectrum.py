@@ -61,31 +61,35 @@ class Spectrum(Distribution):
     def merge_signals(self):
         """
         Merges signals with identical positions, summing their intensities.
+        Assumes positions are sorted (see sort_signals).
         """
-        if len(self.positions) > 0:
-            cpos = self.positions[:, 0]
-            csig = 0.0
-            merged_pos = []
-            merged_sig = []
-            for pos, sig in zip(self.positions.T, self.intensities):
-                if not np.all(pos == cpos):
-                    merged_pos.append(cpos)
-                    merged_sig.append(csig)
-                    cpos = pos
-                    csig = 0.0
-                csig += sig
-            merged_pos.append(cpos)
-            merged_sig.append(csig)
+        # positions is (dim, n_peaks): emptiness is shape[1], not len()
+        # (which is the dimension count and never 0).
+        if self.positions.shape[1] == 0:
+            return self.copy()
+        cpos = self.positions[:, 0]
+        csig = 0.0
+        merged_pos = []
+        merged_sig = []
+        for pos, sig in zip(self.positions.T, self.intensities):
+            if not np.all(pos == cpos):
+                merged_pos.append(cpos)
+                merged_sig.append(csig)
+                cpos = pos
+                csig = 0.0
+            csig += sig
+        merged_pos.append(cpos)
+        merged_sig.append(csig)
 
-            positions = np.array(merged_pos).T
-            intensities = np.array(merged_sig)
+        positions = np.array(merged_pos).T
+        intensities = np.array(merged_sig)
 
-            return Spectrum(
-                positions = positions,
-                intensities = intensities,
-                label = self.label,
-            )
-        
+        return Spectrum(
+            positions = positions,
+            intensities = intensities,
+            label = self.label,
+        )
+
     def sort_positions_and_intensities(self):
 
         """
@@ -94,12 +98,8 @@ class Spectrum(Distribution):
 
         order = np.lexsort(tuple(self.positions[i, :] for i in range(self.positions.shape[0]-1, -1, -1)))
         sorted_positions = self.positions[:, order]
-        sorted_intensities = self.positions[:, order]
+        sorted_intensities = self.intensities[order]
         return sorted_positions, sorted_intensities
-
-    
-    def merge_positions_and_intensities(self):
-        pass
 
 
     # def set_signals(self, positions, intensities):
@@ -121,7 +121,8 @@ class Spectrum(Distribution):
         res = Spectrum(
             positions = np.hstack((self.positions, other.positions)),
             intensities = np.hstack((self.intensities, other.intensities)),
-            label = self.label + ' + ' + other.label,
+            # None-safe (a bare `a + ' + ' + b` crashes on unlabeled spectra)
+            label = self._combined_label(self.label, other.label),
         )
         # res.sort_signals()
         # res.merge_signals()
