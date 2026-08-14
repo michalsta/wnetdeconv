@@ -99,7 +99,7 @@ class DeconvSolver:
         ``int(intensity * sf_intensity)``; peaks below one integer unit floor to
         zero and vanish from the transport network.  Some loss is expected, but
         a too-small scale can silently drop almost everything.  By default, if
-        quantization would discard more than 5% of any spectrum's total
+        quantization would discard more than 20% of any spectrum's total
         intensity, construction raises ``ValueError``.  Set ``True`` to skip the
         check and proceed anyway.  Default False.
 

@@ -47,14 +47,20 @@ be matched cheaply are instead routed to a *trash node* at a fixed penalty.
 to trash.  `trash_cost` (or the asymmetric pair
 `experimental_trash_cost` / `theoretical_trash_cost`) sets that penalty.
 
-### Precision and scaling
+### Scaling
 
 Internally all intensities and costs are scaled to integers for the MCF solver.
-The `precision` parameter (default `1e-3`) sets the desired relative accuracy
-of the cost output: `precision=1e-3` gives ≈ 3 significant figures.  The same
-value becomes the `ftol` stop criterion for scipy optimisers, so the outer loop
-stops as soon as further improvement is below the resolution the integer network
-can deliver.
+Intensities are quantised automatically by a p95-quantile policy
+(`wnet.scaling.WNetDeconvScaler`); cost quantisation is chosen by the network
+itself against its integer budget.  Construction raises `ValueError` if
+quantisation would silently discard more than 20% of any spectrum's total
+intensity (see `allow_intensity_loss`).  Pass `scale_factor` to override the
+automatic scaling explicitly.  The scipy `ftol` stop criterion is derived from
+the actual scale factors, so the outer loop stops as soon as further improvement
+is below the resolution the integer network can deliver.
+
+The former `precision` parameter is deprecated and has no effect; passing a
+non-default value raises a `DeprecationWarning`.
 
 ## Solvers
 
@@ -120,8 +126,8 @@ result = solver.optimize()
 | `trash_cost` | all | Symmetric penalty for unmatched peaks. |
 | `experimental_trash_cost` | `DeconvSolver` | Per-unit penalty for discarding empirical mass. |
 | `theoretical_trash_cost` | `DeconvSolver` | Per-unit penalty for discarding theoretical mass. |
-| `precision` | all | Desired relative cost accuracy; drives `scale_factor` and `ftol` (default `1e-3`). |
-| `scale_factor` | all | Override automatic scaling (bypasses `precision`). |
+| `precision` | all | Deprecated, no effect; non-default values raise `DeprecationWarning`. |
+| `scale_factor` | all | Override automatic intensity/cost quantisation. |
 
 ## Distance metrics
 
