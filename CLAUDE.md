@@ -600,10 +600,11 @@ DeconvSolver            builds the WassersteinNetwork; set_point / total_cost /
 ### Things that are easy to get wrong
 
 - **Scaling.** Intensities are quantised to integer supplies via `sf_intensity`
-  (from `wnet.scaling.WNetDeconvScaler`, driven by `precision`); costs are quantised
+  (from `wnet.scaling.WNetDeconvScaler`'s p95 policy); costs are quantised
   separately by the network itself (`set_cost_scaling`, `0` = auto). Positions are
-  **never** pre-scaled. `precision` also becomes the scipy `ftol`. Passing
-  `scale_factor` explicitly bypasses `precision` for both.
+  **never** pre-scaled. The scipy `ftol` is derived from the actual scale factors.
+  `precision` is deprecated and inert (DeprecationWarning on non-default values);
+  passing `scale_factor` explicitly overrides both quantisations.
 - **Trash models are three, not two.** Symmetric (`add_simple_trash`), asymmetric
   (`add_experimental_trash` + `add_theoretical_trash` — an unmatched empirical/
   theoretical pair can *annihilate* at `min(C_exp, C_theo)`), and independent

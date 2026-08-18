@@ -105,12 +105,14 @@ class DeconvSolver:
 
     Attributes
     ----------
+    sf_intensity : float
+        Intensity quantization factor (integer supply units per intensity unit).
     scale_factor : float
-        The scaling factor used for intensities and costs.
+        Cost quantization factor chosen by the network (``graph.scale_factor()``).
     empirical_spectrum : Distribution
-        The scaled empirical spectrum.
+        The empirical spectrum, as passed in (never rescaled).
     theoretical_spectra : list[Distribution]
-        The scaled theoretical spectra.
+        The theoretical spectra, as passed in (never rescaled).
     graph : WassersteinNetwork
         The underlying Wasserstein network graph.
     point : Sequence[float] or np.ndarray or None

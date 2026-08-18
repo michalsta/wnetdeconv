@@ -96,8 +96,13 @@ optimisation loop:
 ```python
 solver.set_point([5.0, 10.0])
 print(solver.total_cost())   # 0.0
-print(solver.gradient())     # [0. 0.]  (at the optimum)
+print(solver.gradient())     # [200. 300.]
 ```
+
+Note that the gradient is not zero at the optimum: the objective is piecewise
+linear, and at a kink `gradient()` reports the right-derivative (here, the cost
+of trashing the surplus theoretical mass that one more unit of each proportion
+would add).
 
 ### `ConstrainedSolver` — total-mass equality
 
@@ -151,7 +156,11 @@ emp = Spectrum.FromFeatureXML("sample.featureXML")   # requires pyopenms
 wnetdeconv
 ├── Spectrum / Spectrum_1D   — data containers (extend wnet.Distribution)
 ├── DeconvSolver             — core: builds WassersteinNetwork, exposes cost + gradient
-└── ConstrainedSolver        — adds total-mass equality, uses SLSQP
+├── ConstrainedSolver        — adds total-mass equality, uses SLSQP
+│   └── MagnetsteinSolver    — magnetstein-style: all spectra normalised to sum 1
+├── MassersteinSolver2       — reproduces masserstein's dualdeconv2 (one-sided trash)
+└── MassersteinSolver4       — reproduces dualdeconv4 (independent two-sided trash);
+                               requires a wnet build with independent trash support
 ```
 
 The underlying min-cost flow is provided by
