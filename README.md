@@ -87,7 +87,7 @@ solver = DeconvSolver(
 )
 
 result = solver.optimize()
-print(result.x)   # [5. 10.]
+print(result.x)   # ~[5. 10.] (exact up to intensity quantization)
 ```
 
 You can also drive the solver manually — useful when embedding it in your own

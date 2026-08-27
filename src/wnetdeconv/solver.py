@@ -298,6 +298,20 @@ class DeconvSolver:
                 self.graph.add_theoretical_trash(eff_theo)
         else:
             self.graph.add_simple_trash(trash_cost)
+        # Budget the integer cost scale for the proportions the outer loop will
+        # actually visit: the optimum for component i can hardly exceed the
+        # mass ratio emp_total/theo_total_i (the proportion at which that
+        # component alone already carries the whole empirical signal), so
+        # reserve a 16x multiple of it per component.  Within this budget the
+        # int64 cost accumulator cannot overflow; beyond it the network's
+        # solve() raises OverflowError instead of risking a silent wrap that
+        # would return a negative (or worse, plausible-looking) total cost.
+        emp_total = float(empirical_spectrum.sum_intensities)
+        theo_totals = (float(t.sum_intensities) for t in theoretical_spectra)
+        flow_budget = emp_total + 16.0 * sum(
+            max(tt, emp_total) for tt in theo_totals if tt > 0.0
+        )
+        self.graph.set_flow_budget(flow_budget)
         self.graph.build()
         # Reported factors (the cost scale is chosen at build()).
         self.scale_factor = self.graph.scale_factor()
