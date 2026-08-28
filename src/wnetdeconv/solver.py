@@ -13,6 +13,41 @@ from wnet.distances import DistanceMetric
 _INDEPENDENT_TRASH_METHOD = "add_independent_asymmetric_trash"
 
 
+def _check_rounding_loss(empirical, theoreticals, sf, max_dropped_fraction):
+    """Python mirror of wnet's ``ScalerBase::check_rounding_loss``: intensities
+    quantize to integer supplies as round-toward-zero(intensity * sf), and this
+    computes the fraction of each spectrum's total intensity lost to that
+    truncation, raising ValueError past ``max_dropped_fraction``.
+
+    Needed here because the C++ guard runs only inside ``WNetDeconvScaler``,
+    which the explicit ``scale_factor`` path bypasses — without this, a
+    too-small explicit scale silently deletes mass (up to 100%) and the solver
+    returns cost 0 with a nonzero gradient.
+    """
+    worst_frac = 0.0
+    worst_name = ""
+    named = [(empirical, "empirical_spectrum")] + [
+        (t, f"theoretical_spectra[{i}]") for i, t in enumerate(theoreticals)
+    ]
+    for d, name in named:
+        total = float(d.sum_intensities)
+        if not total > 0.0:
+            continue
+        kept = float(np.sum(np.trunc(np.asarray(d.intensities) * sf))) / sf
+        frac = (total - kept) / total
+        if frac > worst_frac:
+            worst_frac = frac
+            worst_name = name
+    if worst_frac > max_dropped_fraction:
+        raise ValueError(
+            f"Integer intensity quantization at sf_intensity={sf} would lose "
+            f"{worst_frac * 100.0:.6f}% of {worst_name}'s total intensity to "
+            f"rounding (limit {max_dropped_fraction * 100.0:.6f}%): the "
+            f"intensity scale is too coarse for this spectrum.  Pass a larger "
+            f"scale_factor or allow the loss (allow_intensity_loss=True)."
+        )
+
+
 def _wnet_supports_independent_trash() -> bool:
     """Empirically check whether the installed wnet exposes the independent-abyss
     trash model that :class:`MassersteinSolver4` requires.
@@ -215,10 +250,36 @@ class DeconvSolver:
         #   * cost/distance quantization — the network itself via set_cost_scaling
         #     on real distances, so no position pre-scaling needed.
         if scale_factor:
-            # Explicit override: use sf_intensity directly (both sf_distance and
-            # sf_intensity equal to scale_factor, matching old behaviour).
+            # Explicit override: intensities are quantized with exactly
+            # scale_factor; the integer cost scale mirrors it as closely as the
+            # int64 solver allows (nearest integer >= 1).  For
+            # 0 < scale_factor < 1 no integer cost scale exists, so cost
+            # quantization falls back to auto — with a warning, not silently —
+            # while the intensity scale is still honored.
+            if scale_factor < 0:
+                raise ValueError(
+                    f"scale_factor must be positive, got {scale_factor!r}"
+                )
             sf_intensity = float(scale_factor)
-            cost_scale = int(scale_factor)
+            cost_scale = int(round(sf_intensity))
+            if cost_scale < 1:
+                import warnings
+
+                warnings.warn(
+                    f"scale_factor={sf_intensity!r} < 1 cannot be honored by "
+                    f"the integer cost scale (which must be >= 1); cost "
+                    f"quantization falls back to auto while intensities are "
+                    f"still scaled by {sf_intensity!r}.",
+                    stacklevel=2,
+                )
+                cost_scale = 0
+            # The advertised rounding-loss guard applies on this path too (the
+            # WNetDeconvScaler below runs it in C++; here we mirror it): a
+            # too-coarse explicit scale would otherwise silently delete mass.
+            if not allow_intensity_loss:
+                _check_rounding_loss(
+                    empirical_spectrum, theoretical_spectra, sf_intensity, 0.20
+                )
         else:
             scaler = WNetDeconvScaler(
                 empirical_spectrum,
@@ -249,6 +310,18 @@ class DeconvSolver:
         # (warm_violation_limit=0) unless explicitly configured; centroided
         # data keeps repair, which wins there (PBTTT ~4x).
         from wnet.wnet_cpp import NetworkSimplex as _NSConfig, SlopeDP as _SlopeDP
+        # Resolve a method string to its solver config object up front, so the
+        # policy below treats method="network_simplex" and NetworkSimplex()
+        # identically (the shared-grid warm-repair override used to be bypassed
+        # by the string spelling).
+        if solver is None and method is not None:
+            if method not in WassersteinNetwork._SOLVER_METHODS:
+                raise ValueError(
+                    f"Unknown method {method!r}. Choose from: "
+                    f"{list(WassersteinNetwork._SOLVER_METHODS)}"
+                )
+            solver = WassersteinNetwork._SOLVER_METHODS[method]()
+            method = None
         if empirical_spectrum.dimension == 1 and not force_dense_1d:
             if solver is None and method is None:
                 solver = _SlopeDP()
