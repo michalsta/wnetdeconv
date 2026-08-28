@@ -102,7 +102,21 @@ class DeconvSolver:
     distance_function : Callable[[np.ndarray, np.ndarray], np.ndarray]
         Function to compute the distance between empirical and theoretical peaks.
     max_distance : int or float
-        Maximum allowed distance for matching peaks.
+        Maximum allowed distance for matching peaks.  Semantics depend on the
+        factory in use:
+
+        * **1-D chain mode** (the default for 1-D data): ``max_distance``
+          acts as a *chain-splitting radius* — the merged peak sequence is
+          split into independent components wherever the gap between
+          *consecutive* peaks exceeds it.  Within a component, mass may
+          legally travel along the chain through intermediate peaks to a
+          destination *farther* than ``max_distance`` from its origin (each
+          hop pays its gap cost); it is not a per-pair cap.  This is
+          forwarded to wnet as ``split_distance``.
+        * **Dense mode** (dims > 1, ``force_dense_1d=True``, or a
+          chain-incapable solver such as CostScaling/CapacityScaling): a
+          strict *per-pair* matching threshold — mass is never transported
+          between peaks farther apart than ``max_distance``.
     trash_cost : int or float, optional
         Cost for assigning unmatched peaks to trash (symmetric). Used as fallback for
         experimental_trash_cost / theoretical_trash_cost when only one is set.
@@ -127,7 +141,9 @@ class DeconvSolver:
         Defaults to ``NetworkSimplex()`` (warm restarts, BLOCK_SEARCH pivot).
     force_dense_1d : bool, optional
         In 1D, force the O(m*n) dense factory instead of the O(m+n) chain
-        factory (default False = chain in 1D).  Forwarded to
+        factory (default False = chain in 1D).  Also switches
+        ``max_distance`` from the chain-splitting-radius semantics to the
+        strict per-pair cap (see ``max_distance`` above).  Forwarded to
         :class:`WassersteinNetwork`.
     allow_intensity_loss : bool, optional
         Intensities are quantized to integer supplies as
@@ -322,6 +338,11 @@ class DeconvSolver:
                 )
             solver = WassersteinNetwork._SOLVER_METHODS[method]()
             method = None
+        elif solver is not None and method is not None:
+            # Documented behaviour: ``method`` is ignored when ``solver`` is
+            # provided.  wnet >= 1.3.0's wrapper raises on solver+method
+            # together, so drop the ignored one here.
+            method = None
         if empirical_spectrum.dimension == 1 and not force_dense_1d:
             if solver is None and method is None:
                 solver = _SlopeDP()
@@ -339,16 +360,40 @@ class DeconvSolver:
                 cfg.warm_violation_limit = 0
                 solver = cfg
 
+        # wnet >= 1.3.0 names the two distance-cap semantics separately:
+        # ``max_distance`` is a guaranteed per-pair matching threshold (dense
+        # semantics), ``split_distance`` is the 1-D chain component-splitting
+        # radius.  DeconvSolver's 1-D path has always used the chain factory
+        # with the user's cap as the splitting radius, so route it to
+        # split_distance there — this preserves the historical behaviour
+        # exactly (e.g. one-sided-trash 1-D setups keep the chain instead of
+        # being re-gated to dense).  Dims > 1, force_dense_1d=True, and
+        # chain-incapable solvers (CostScaling / CapacityScaling, which always
+        # fell back to the dense factory) keep per-pair dense semantics.
+        from wnet.wnet_cpp import (
+            CostScaling as _CSConfig,
+            CapacityScaling as _CPSConfig,
+        )
+        chain_semantics = (
+            empirical_spectrum.dimension == 1
+            and not force_dense_1d
+            and not isinstance(solver, (_CSConfig, _CPSConfig))
+        )
+        cap_kwarg = (
+            {"split_distance": max_distance}
+            if chain_semantics
+            else {"max_distance": max_distance}
+        )
         self.graph = WassersteinNetwork(
             empirical_spectrum,
             theoretical_spectra,
             distance,
-            max_distance,
             force_dense_1d=force_dense_1d,
             method=method,
             solver=solver,
             intensity_scale=sf_intensity,
             round_max_distance=False,
+            **cap_kwarg,
         )
         # Enable cost scaling so p == 1 carries real fractional distances.
         self.graph.set_cost_scaling(cost_scale)
@@ -932,13 +977,14 @@ class MassersteinSolver2(_MassersteinBase):
         dualdeconv2).
     theo_trash_mult : float, optional
         Multiplier on ``MTD`` for the +inf-proxy theoretical trash cost.
-        Default 10× is what fixes the minimal-divergence example
-        (``experiments/minimal_dense_noise_divergence.py``); below ~10× the
-        nested MCF under-prices un-routable theoretical mass relative to
-        masserstein's real-distance transport.  Should be at least as large
-        as the maximum inter-isotope distance you expect un-routed mass to
-        need to travel (in m/z units of ``MTD``).  Above ~few hundred it can
-        lose precision via the auto ``scale_factor``.
+        Default 3×.  Sweeps against dualdeconv2 (deconvbench ms-hemoglobin
+        and ``experiments/minimal_dense_noise_divergence.py``) show a plateau
+        at 2-5× on which both cases agree with masserstein: below ~2× the
+        nested MCF under-prices un-routable theoretical mass and proportions
+        inflate, while above ~7× the overpriced theoretical abyss makes
+        zeroing a small component cheaper than dumping its un-routable mass
+        (the former 10× default silently zeroed a 5.6%-share component on
+        the hemoglobin benchmark; L1 error 0.113 vs 0.016 at 3×).
     method : str, optional
         Min-cost flow algorithm.  Ignored when ``solver`` is provided.
     solver : NetworkSimplex | CostScaling | CycleCanceling | CapacityScaling, optional
@@ -950,7 +996,7 @@ class MassersteinSolver2(_MassersteinBase):
         empirical_spectrum: Distribution,
         theoretical_spectra: Sequence[Distribution],
         MTD: float,
-        theo_trash_mult: float = 10.0,
+        theo_trash_mult: float = 3.0,
         method: str = None,
         solver=None,
         precision: float = 1e-3,
