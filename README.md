@@ -160,7 +160,7 @@ wnetdeconv
 │   └── MagnetsteinSolver    — magnetstein-style: all spectra normalised to sum 1
 ├── MassersteinSolver2       — reproduces masserstein's dualdeconv2 (one-sided trash)
 └── MassersteinSolver4       — reproduces dualdeconv4 (independent two-sided trash);
-                               requires a wnet build with independent trash support
+                               requires wnet >= 1.4.0 (independent trash)
 ```
 
 The underlying min-cost flow is provided by

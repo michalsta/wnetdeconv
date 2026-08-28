@@ -73,17 +73,13 @@ def _require_independent_trash_support() -> None:
     if _wnet_supports_independent_trash():
         return
     raise RuntimeError(
-        "MassersteinSolver4 (dualdeconv4) requires wnet's independent-abyss trash "
+        "MassersteinSolver4 (dualdeconv4) requires wnet's independent-trash "
         "model, but the installed wnet does not expose "
-        f"'{_INDEPENDENT_TRASH_METHOD}'. This feature lives on the 'dual_trash_2' "
-        "branch and is not part of the PyPI / 'main' build. Install wnet from git "
-        "on that branch, e.g.:\n"
-        "    pip install --force-reinstall "
-        "'git+https://github.com/michalsta/wnet.git@dual_trash_2'\n"
-        "or from a local checkout:\n"
-        "    git -C /path/to/wnet checkout dual_trash_2 && pip install -e /path/to/wnet\n"
-        "then rebuild the C++ extension. Use MassersteinSolver2 (dualdeconv2) if you "
-        "do not need the two-sided independent denoising penalty."
+        f"'{_INDEPENDENT_TRASH_METHOD}'. It is part of wnet main since version "
+        "1.4.0; upgrade with:\n"
+        "    pip install --upgrade 'wnet>=1.4.0'\n"
+        "Use MassersteinSolver2 (dualdeconv2) if you do not need the "
+        "two-sided independent denoising penalty."
     )
 
 
@@ -343,7 +339,15 @@ class DeconvSolver:
             # provided.  wnet >= 1.3.0's wrapper raises on solver+method
             # together, so drop the ignored one here.
             method = None
-        if empirical_spectrum.dimension == 1 and not force_dense_1d:
+        # Independent trash forbids the chain factory (the per-match cost
+        # shift cannot ride chain hop arcs), so the chain-native SlopeDP
+        # default must not be picked for it; the wrapper then selects the
+        # dense factory on its own.
+        if (
+            empirical_spectrum.dimension == 1
+            and not force_dense_1d
+            and not independent_trash
+        ):
             if solver is None and method is None:
                 solver = _SlopeDP()
             elif (
@@ -378,6 +382,9 @@ class DeconvSolver:
             empirical_spectrum.dimension == 1
             and not force_dense_1d
             and not isinstance(solver, (_CSConfig, _CPSConfig))
+            # Independent trash requires the dense factory (per-match cost
+            # shift), so it keeps per-pair max_distance semantics.
+            and not independent_trash
         )
         cap_kwarg = (
             {"split_distance": max_distance}

@@ -612,11 +612,12 @@ DeconvSolver            builds the WassersteinNetwork; set_point / total_cost /
   The annihilation discount in the asymmetric model is a real behavioural
   difference, not a detail: it inflates `w` and dumps forced theoretical mass for
   free. `MassersteinSolver4` therefore requires the independent model.
-- **`MassersteinSolver4` needs a non-PyPI wnet.** `add_independent_asymmetric_trash`
-  only exists on wnet's `dual_trash_2` branch; `_wnet_supports_independent_trash()`
-  probes the nanobind classes and raises a directive error otherwise. The local
-  `../wnet` checkout is normally on `main`, so this class will refuse to construct
-  until that branch is installed.
+- **`MassersteinSolver4` needs wnet >= 1.4.0.** `add_independent_asymmetric_trash`
+  is on wnet `main` since 1.4.0 (reimplemented there via a matching-cost shift;
+  the historical `dual_trash_2` branch is dead). `_wnet_supports_independent_trash()`
+  probes the nanobind classes and raises a directive error on older wnet.
+  Independent trash forces the dense factory (the per-match cost shift cannot
+  ride chain hop arcs), so SlopeDP and `split_distance` do not apply to it.
 - **Gradient variants.** `gradient()` is the exact marginal (per-subgraph Dijkstra).
   `gradient_fast_approx()` is a dual-potential difference — cheaper, basis-dependent,
   a lower bound, exact only on the optimal flow support. Not a drop-in replacement.
