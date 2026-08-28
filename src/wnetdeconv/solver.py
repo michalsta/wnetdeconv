@@ -380,9 +380,16 @@ class DeconvSolver:
         # solve() raises OverflowError instead of risking a silent wrap that
         # would return a negative (or worse, plausible-looking) total cost.
         emp_total = float(empirical_spectrum.sum_intensities)
-        theo_totals = (float(t.sum_intensities) for t in theoretical_spectra)
-        flow_budget = emp_total + 16.0 * sum(
-            max(tt, emp_total) for tt in theo_totals if tt > 0.0
+        theo_totals = [float(t.sum_intensities) for t in theoretical_spectra]
+        # Per-component proportion caps implied by the budget; optimizers use
+        # these as L-BFGS-B/SLSQP bounds so the search cannot leave the
+        # representable region (solve() raises OverflowError past it).
+        self._w_caps = np.array([
+            16.0 * max(1.0, emp_total / tt) if tt > 0.0 else np.inf
+            for tt in theo_totals
+        ])
+        flow_budget = emp_total + sum(
+            cap * tt for cap, tt in zip(self._w_caps, theo_totals) if tt > 0.0
         )
         self.graph.set_flow_budget(flow_budget)
         self.graph.build()
@@ -390,6 +397,30 @@ class DeconvSolver:
         self.scale_factor = self.graph.scale_factor()
         self._ftol = 1.0 / (self.graph.scale_factor() * sf_intensity)
         self.point = None
+
+    def _budget_bounds(self) -> list:
+        """Per-component (0, cap) bounds matching the declared flow budget."""
+        return [(0.0, c if np.isfinite(c) else None) for c in self._w_caps]
+
+    def _warn_if_caps_binding(self, x) -> None:
+        """Warn when an optimum sits against the budget bound — the true
+        optimum may lie beyond the representable region."""
+        x = np.atleast_1d(np.asarray(x, dtype=float))
+        binding = [
+            i for i, (xi, cap) in enumerate(zip(x, self._w_caps))
+            if np.isfinite(cap) and xi > 0.99 * cap
+        ]
+        if binding:
+            import warnings
+
+            warnings.warn(
+                f"Proportions at indices {binding} ended within 1% of the "
+                f"overflow-budget bound and may be clipped; pass an explicit "
+                f"scale_factor or rescale theoretical intensities to widen "
+                f"the representable region.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
 
     def _all_spectra_share_grid(self) -> bool:
         """True if every theoretical spectrum sits on the empirical spectrum's
@@ -509,14 +540,16 @@ class DeconvSolver:
             self.set_point(w)
             return self.total_cost(), self.gradient()
 
-        return minimize(
+        result = minimize(
             cost_and_grad,
             x0=x0,
             jac=True,
             method="L-BFGS-B",
-            bounds=[(0.0, None)] * n,
+            bounds=self._budget_bounds(),
             options={"ftol": self._ftol},
         )
+        self._warn_if_caps_binding(result.x)
+        return result
 
     def no_subgraphs(self) -> int:
         """
@@ -639,7 +672,7 @@ class ConstrainedSolver(DeconvSolver):
             w0 = self._emp_total / self._theo_totals.sum()
             x0 = np.full(n, w0)
         if bounds is None:
-            bounds = [(0.0, None)] * n
+            bounds = self._budget_bounds()
 
         def cost_and_grad(w):
             self.set_point(w)
@@ -651,7 +684,7 @@ class ConstrainedSolver(DeconvSolver):
             "jac": lambda w: self._theo_totals,
         }
 
-        return minimize(
+        result = minimize(
             cost_and_grad,
             x0=x0,
             jac=True,
@@ -660,6 +693,8 @@ class ConstrainedSolver(DeconvSolver):
             constraints=constraint,
             options={"maxiter": 2000, "ftol": self._ftol},
         )
+        self._warn_if_caps_binding(result.x)
+        return result
 
 
 class MagnetsteinSolver(ConstrainedSolver):
@@ -793,7 +828,7 @@ class _MassersteinBase(DeconvSolver):
             x0=x0,
             jac=True,
             method="L-BFGS-B",
-            bounds=[(0.0, None)] * n,
+            bounds=self._budget_bounds(),
             options={"maxiter": 2000, "ftol": self._ftol, "gtol": 1e-10},
         )
 
@@ -820,10 +855,11 @@ class _MassersteinBase(DeconvSolver):
                 x0=x_init,
                 jac=True,
                 method="SLSQP",
-                bounds=[(0.0, None)] * n,
+                bounds=self._budget_bounds(),
                 constraints=constraints,
                 options={"maxiter": 2000, "ftol": min(self._ftol, self._FTOL_CEILING)},
             )
+        self._warn_if_caps_binding(result.x)
         return {
             "probs": list(result.x),
             "fun": result.fun,
