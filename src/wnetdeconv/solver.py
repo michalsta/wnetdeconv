@@ -109,10 +109,11 @@ class DeconvSolver:
           destination *farther* than ``max_distance`` from its origin (each
           hop pays its gap cost); it is not a per-pair cap.  This is
           forwarded to wnet as ``split_distance``.
-        * **Dense mode** (dims > 1, ``force_dense_1d=True``, or a
-          chain-incapable solver such as CostScaling/CapacityScaling): a
-          strict *per-pair* matching threshold — mass is never transported
-          between peaks farther apart than ``max_distance``.
+        * **Dense mode** (dims > 1, ``force_dense_1d=True``, a
+          chain-incapable solver such as CostScaling/CapacityScaling, or
+          ``independent_trash=True`` with any solver other than the SlopeDP
+          default): a strict *per-pair* matching threshold — mass is never
+          transported between peaks farther apart than ``max_distance``.
     trash_cost : int or float, optional
         Cost for assigning unmatched peaks to trash (symmetric). Used as fallback for
         experimental_trash_cost / theoretical_trash_cost when only one is set.
@@ -339,14 +340,13 @@ class DeconvSolver:
             # provided.  wnet >= 1.3.0's wrapper raises on solver+method
             # together, so drop the ignored one here.
             method = None
-        # Independent trash forbids the chain factory (the per-match cost
-        # shift cannot ride chain hop arcs), so the chain-native SlopeDP
-        # default must not be picked for it; the wrapper then selects the
-        # dense factory on its own.
+        # Independent trash rides the chain only under SlopeDP (wnet >= 1.4.0
+        # prices it analytically there; the per-match cost shift cannot ride
+        # chain hop arcs, so any other solver forces the dense factory).  The
+        # chain-native SlopeDP default therefore applies to it as well.
         if (
             empirical_spectrum.dimension == 1
             and not force_dense_1d
-            and not independent_trash
         ):
             if solver is None and method is None:
                 solver = _SlopeDP()
@@ -382,9 +382,10 @@ class DeconvSolver:
             empirical_spectrum.dimension == 1
             and not force_dense_1d
             and not isinstance(solver, (_CSConfig, _CPSConfig))
-            # Independent trash requires the dense factory (per-match cost
-            # shift), so it keeps per-pair max_distance semantics.
-            and not independent_trash
+            # Independent trash is chain-capable only under SlopeDP; any
+            # other solver needs the dense factory and therefore per-pair
+            # max_distance semantics.
+            and (not independent_trash or isinstance(solver, _SlopeDP))
         )
         cap_kwarg = (
             {"split_distance": max_distance}

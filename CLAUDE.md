@@ -616,8 +616,10 @@ DeconvSolver            builds the WassersteinNetwork; set_point / total_cost /
   is on wnet `main` since 1.4.0 (reimplemented there via a matching-cost shift;
   the historical `dual_trash_2` branch is dead). `_wnet_supports_independent_trash()`
   probes the nanobind classes and raises a directive error on older wnet.
-  Independent trash forces the dense factory (the per-match cost shift cannot
-  ride chain hop arcs), so SlopeDP and `split_distance` do not apply to it.
+  On 1-D data independent trash rides the chain under SlopeDP (wnet prices the
+  trash analytically there — `trash_of(M)` is exactly affine with marginal
+  `C_exp + C_theo`); any other solver still forces the dense factory (the
+  per-match cost shift cannot ride chain hop arcs).
 - **Gradient variants.** `gradient()` is the exact marginal (per-subgraph Dijkstra).
   `gradient_fast_approx()` is a dual-potential difference — cheaper, basis-dependent,
   a lower bound, exact only on the optimal flow support. Not a drop-in replacement.
