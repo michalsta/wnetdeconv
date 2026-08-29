@@ -786,6 +786,18 @@ class MagnetsteinSolver(ConstrainedSolver):
     experimental_trash_cost = MTD and theoretical_trash_cost = MTD_th
     correspond directly to magnetstein's penalty and penalty_th parameters.
 
+    When ``MTD_th`` is given, the trash model defaults to *independent*
+    two-sided trash (``independent_trash=True``): an unmatched empirical
+    unit costs MTD and an unfilled theoretical unit costs MTD_th, charged
+    separately.  This matches magnetstein's own LP — dualdeconv3/4
+    explicitly forbid transport between the two auxiliary trash points.
+    ``independent_trash=False`` restores wnet's annihilating asymmetric
+    model, where an (unmatched-empirical, unfilled-theoretical) pair can
+    cancel at min(MTD, MTD_th); that discount is not part of magnetstein's
+    formulation and can zero out small components (e.g. alpha-pinene in the
+    magnetstein perfumes mixture), but is kept as an option for continuity
+    with earlier releases.
+
     Parameters
     ----------
     empirical_spectrum : Distribution
@@ -798,11 +810,15 @@ class MagnetsteinSolver(ConstrainedSolver):
         Maximum Transport Distance for the mix (experimental trash cost).
     MTD_th : float, optional
         Maximum Transport Distance for components (theoretical trash cost).
-        If None, uses symmetric trash with cost MTD.
+        If None, uses symmetric trash with cost MTD (and ``independent_trash``
+        is ignored — the independent model needs both per-side penalties).
     method : str, optional
         Min-cost flow algorithm (default: ``"network_simplex"``). Ignored when ``solver`` is provided.
     solver : NetworkSimplex | CostScaling | CycleCanceling | CapacityScaling, optional
         Solver configuration object.  Takes precedence over ``method``.
+    independent_trash : bool, optional
+        Trash model when ``MTD_th`` is given (default True = independent,
+        matching dualdeconv3/4; False = annihilating asymmetric).  See above.
     """
 
     def __init__(
@@ -816,6 +832,7 @@ class MagnetsteinSolver(ConstrainedSolver):
         solver=None,
         precision: float = 1e-3,
         p: float = 1.0,
+        independent_trash: bool = True,
     ) -> None:
         emp = empirical_spectrum.normalized()
         theos = [t.normalized() for t in theoretical_spectra]
@@ -836,6 +853,25 @@ class MagnetsteinSolver(ConstrainedSolver):
                 solver=solver,
                 precision=precision,
                 p=p,
+            )
+        elif independent_trash:
+            # Independent trash: dumping a matched pair costs MTD + MTD_th, so
+            # every match up to the profitable radius (MTD + MTD_th)**(1/p)
+            # must exist; for p == 1 this is also exactly the chain/dense
+            # factory parity threshold (split_distance >= C_exp + C_theo).
+            cap = (MTD + MTD_th) ** (1.0 / p)
+            super().__init__(
+                emp,
+                theos,
+                distance,
+                max_distance=cap,
+                experimental_trash_cost=MTD,
+                theoretical_trash_cost=MTD_th,
+                method=method,
+                solver=solver,
+                precision=precision,
+                p=p,
+                independent_trash=True,
             )
         else:
             cap = (
@@ -1132,7 +1168,7 @@ def MassersteinSolver(
     theoretical_spectra: Sequence[Distribution],
     MTD: float,
     MTD_th: Optional[float] = None,
-    theo_trash_mult: float = 10.0,
+    theo_trash_mult: float = 3.0,
     method: str = None,
     solver=None,
     precision: float = 1e-3,

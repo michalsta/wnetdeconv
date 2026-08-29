@@ -588,7 +588,9 @@ before tagging, or the wheel workflow fails immediately.
 DeconvSolver            builds the WassersteinNetwork; set_point / total_cost /
 │                       gradient / flows; optimize() = L-BFGS-B, w >= 0
 ├── ConstrainedSolver    adds Σ wₛ·Iₛ = I_emp; optimize() = SLSQP
-│   └── MagnetsteinSolver   normalises all spectra to sum 1; MTD/MTD_th naming
+│   └── MagnetsteinSolver   normalises all spectra to sum 1; MTD/MTD_th naming;
+│                           with MTD_th defaults to independent trash
+│                           (independent_trash=False = annihilating)
 └── _MassersteinBase     deconvolve(): L-BFGS-B, then SLSQP only if Σw > 1
     ├── MassersteinSolver2   mimics masserstein dualdeconv2 (one-sided trash)
     └── MassersteinSolver4   mimics dualdeconv4 (two independent abysses)
@@ -611,7 +613,13 @@ DeconvSolver            builds the WassersteinNetwork; set_point / total_cost /
   (`add_independent_asymmetric_trash`, charged `C_exp + C_theo`, no discount).
   The annihilation discount in the asymmetric model is a real behavioural
   difference, not a detail: it inflates `w` and dumps forced theoretical mass for
-  free. `MassersteinSolver4` therefore requires the independent model.
+  free. `MassersteinSolver4` therefore requires the independent model, and
+  `MagnetsteinSolver` (with `MTD_th`) defaults to it too — magnetstein's own
+  LP (dualdeconv3/4) forbids trash-to-trash transport, and on the deconvbench
+  NMR datasets the annihilating model zeroes small components (alpha-pinene in
+  e3-perfumes). `independent_trash=False` restores the annihilating model.
+  Note the discount only operates *within* a connected component; peaks split
+  into separate subgraphs pay full per-side costs under both models.
 - **`MassersteinSolver4` needs wnet >= 1.4.0.** `add_independent_asymmetric_trash`
   is on wnet `main` since 1.4.0 (reimplemented there via a matching-cost shift;
   the historical `dual_trash_2` branch is dead). `_wnet_supports_independent_trash()`

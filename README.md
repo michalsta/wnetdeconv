@@ -157,7 +157,10 @@ wnetdeconv
 ├── Spectrum / Spectrum_1D   — data containers (extend wnet.Distribution)
 ├── DeconvSolver             — core: builds WassersteinNetwork, exposes cost + gradient
 ├── ConstrainedSolver        — adds total-mass equality, uses SLSQP
-│   └── MagnetsteinSolver    — magnetstein-style: all spectra normalised to sum 1
+│   └── MagnetsteinSolver    — magnetstein-style: all spectra normalised to sum 1;
+│                              with MTD_th, defaults to independent two-sided trash
+│                              (dualdeconv3/4 semantics; independent_trash=False
+│                              restores the annihilating model)
 ├── MassersteinSolver2       — reproduces masserstein's dualdeconv2 (one-sided trash)
 └── MassersteinSolver4       — reproduces dualdeconv4 (independent two-sided trash);
                                requires wnet >= 1.4.0 (independent trash)
