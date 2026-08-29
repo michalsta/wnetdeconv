@@ -48,46 +48,33 @@ class Spectrum(Distribution):
     
     def sort_signals(self):
         """
-        Sorts positions and intensities using np.lexsort with the positions as keys.
-        """
+        Returns a copy with peaks sorted lexicographically by position
+        (dimension 0 first, then 1, ...), intensities permuted along.
 
-        order = np.lexsort(tuple(self.positions[i, :] for i in range(self.positions.shape[0]-1, -1, -1)))
-        return Spectrum(
-            positions = self.positions[:, order],
-            intensities = self.intensities[order],
-            label = self.label,
-        )
+        Delegates to the C++-backed ``Distribution.sorted_by_positions``
+        (which returns a ``Spectrum`` here, label preserved).  Peaks are not
+        merged.
+        """
+        return self.sorted_by_positions()
 
     def merge_signals(self):
         """
-        Merges signals with identical positions, summing their intensities.
-        Assumes positions are sorted (see sort_signals).
+        Returns a copy with peaks sharing an identical position merged
+        (intensities summed) and the result sorted lexicographically.
+
+        Performed in C++ (via the single-input linear combination, weight 1 —
+        exact in double).  Unlike the historical Python implementation this
+        does not require the peaks to be pre-sorted.
         """
         # positions is (dim, n_peaks): emptiness is shape[1], not len()
         # (which is the dimension count and never 0).
         if self.positions.shape[1] == 0:
             return self.copy()
-        cpos = self.positions[:, 0]
-        csig = 0.0
-        merged_pos = []
-        merged_sig = []
-        for pos, sig in zip(self.positions.T, self.intensities):
-            if not np.all(pos == cpos):
-                merged_pos.append(cpos)
-                merged_sig.append(csig)
-                cpos = pos
-                csig = 0.0
-            csig += sig
-        merged_pos.append(cpos)
-        merged_sig.append(csig)
-
-        positions = np.array(merged_pos).T
-        intensities = np.array(merged_sig)
-
-        return Spectrum(
-            positions = positions,
-            intensities = intensities,
-            label = self.label,
+        cpp = type(self.vecdist).linear_combination(
+            [self.vecdist], np.ones(1, dtype=np.float64)
+        )
+        return type(self)(
+            cpp.py_get_positions(), cpp.py_get_intensities(), label=self.label
         )
 
     def sort_positions_and_intensities(self):
@@ -116,19 +103,12 @@ class Spectrum(Distribution):
     #     self.sort_confs()
     #     self.merge_confs()
     
-    def __add__(self, other):
-        
-        res = Spectrum(
-            positions = np.hstack((self.positions, other.positions)),
-            intensities = np.hstack((self.intensities, other.intensities)),
-            # None-safe (a bare `a + ' + ' + b` crashes on unlabeled spectra)
-            label = self._combined_label(self.label, other.label),
-        )
-        # res.sort_signals()
-        # res.merge_signals()
-        res = res.sort_signals()
-        res = res.merge_signals()
-        return res
+    # __add__ is inherited from Distribution: the C++-backed merge
+    # (concatenate, merge identical positions, sort lexicographically) with
+    # None-safe label combination, returning a Spectrum (polymorphic
+    # constructor).  Identical semantics to the historical
+    # hstack + sort_signals + merge_signals chain, without the per-peak
+    # Python loop.
 
     def __mul__(self, number):
         res = Spectrum(
