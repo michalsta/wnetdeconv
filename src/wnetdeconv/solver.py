@@ -150,6 +150,12 @@ class DeconvSolver:
         quantization would discard more than 20% of any spectrum's total
         intensity, construction raises ``ValueError``.  Set ``True`` to skip the
         check and proceed anyway.  Default False.
+    p : float, optional
+        Wasserstein transport order (default 1.0).  Matching a unit across
+        distance ``d`` costs ``d**p``, so ``total_cost()`` and gradients are
+        in W_p**p units.  For ``p != 1`` on 1-D data the chain-native
+        ConvexSweep solver (wnet >= 1.4.0) is the default; any explicitly
+        requested other solver forces the dense factory.
 
     Attributes
     ----------
@@ -198,6 +204,7 @@ class DeconvSolver:
         precision: float = 1e-3,
         independent_trash: bool = False,
         allow_intensity_loss: bool = False,
+        p: float = 1.0,
     ) -> None:
 
         if (
@@ -217,6 +224,9 @@ class DeconvSolver:
             raise TypeError("all theoretical_spectra elements must be Distribution")
         if not isinstance(max_distance, (int, float)):
             raise TypeError("max_distance must be a number")
+        p = float(p)
+        if not (p >= 1.0) or not np.isfinite(p):
+            raise ValueError(f"Wasserstein order p must be a real >= 1, got {p!r}")
         for name, val in [
             ("trash_cost", trash_cost),
             ("experimental_trash_cost", experimental_trash_cost),
@@ -298,7 +308,10 @@ class DeconvSolver:
                 empirical_spectrum,
                 theoretical_spectra,
                 distance,
-                max_distance,
+                # For p != 1 matching costs reach max_distance**p; feed the
+                # scaler the larger of the two so its int64 budget is safe in
+                # both regimes.
+                max(max_distance, max_distance**p),
                 active_costs,
                 max_dropped_fraction=(1.0 if allow_intensity_loss else 0.20),
             )
@@ -322,7 +335,11 @@ class DeconvSolver:
         # walks (2-5x slower than plain cold restarts), so disable repair
         # (warm_violation_limit=0) unless explicitly configured; centroided
         # data keeps repair, which wins there (PBTTT ~4x).
-        from wnet.wnet_cpp import NetworkSimplex as _NSConfig, SlopeDP as _SlopeDP
+        from wnet.wnet_cpp import (
+            NetworkSimplex as _NSConfig,
+            SlopeDP as _SlopeDP,
+            ConvexSweep as _ConvexSweep,
+        )
         # Resolve a method string to its solver config object up front, so the
         # policy below treats method="network_simplex" and NetworkSimplex()
         # identically (the shared-grid warm-repair override used to be bypassed
@@ -349,7 +366,9 @@ class DeconvSolver:
             and not force_dense_1d
         ):
             if solver is None and method is None:
-                solver = _SlopeDP()
+                # SlopeDP is the chain-native exact solver for p == 1;
+                # ConvexSweep (wnet >= 1.4.0) is its analogue for p > 1.
+                solver = _SlopeDP() if p == 1.0 else _ConvexSweep()
             elif (
                 isinstance(solver, _NSConfig)
                 and solver.warm_violation_limit == -2
@@ -382,10 +401,16 @@ class DeconvSolver:
             empirical_spectrum.dimension == 1
             and not force_dense_1d
             and not isinstance(solver, (_CSConfig, _CPSConfig))
-            # Independent trash is chain-capable only under SlopeDP; any
+            # Independent trash is chain-capable only under the analytic
+            # backends (SlopeDP for p == 1, ConvexSweep for any p); any
             # other solver needs the dense factory and therefore per-pair
             # max_distance semantics.
-            and (not independent_trash or isinstance(solver, _SlopeDP))
+            and (
+                not independent_trash
+                or isinstance(solver, (_SlopeDP, _ConvexSweep))
+            )
+            # p != 1 rides the chain only under ConvexSweep.
+            and (p == 1.0 or isinstance(solver, _ConvexSweep))
         )
         cap_kwarg = (
             {"split_distance": max_distance}
@@ -401,6 +426,7 @@ class DeconvSolver:
             solver=solver,
             intensity_scale=sf_intensity,
             round_max_distance=False,
+            p=p,
             **cap_kwarg,
         )
         # Enable cost scaling so p == 1 carries real fractional distances.
@@ -789,6 +815,7 @@ class MagnetsteinSolver(ConstrainedSolver):
         method: str = None,
         solver=None,
         precision: float = 1e-3,
+        p: float = 1.0,
     ) -> None:
         emp = empirical_spectrum.normalized()
         theos = [t.normalized() for t in theoretical_spectra]
@@ -802,6 +829,7 @@ class MagnetsteinSolver(ConstrainedSolver):
                 method=method,
                 solver=solver,
                 precision=precision,
+                p=p,
             )
         else:
             super().__init__(
@@ -814,6 +842,7 @@ class MagnetsteinSolver(ConstrainedSolver):
                 method=method,
                 solver=solver,
                 precision=precision,
+                p=p,
             )
 
 
