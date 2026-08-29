@@ -819,12 +819,18 @@ class MagnetsteinSolver(ConstrainedSolver):
     ) -> None:
         emp = empirical_spectrum.normalized()
         theos = [t.normalized() for t in theoretical_spectra]
+        # p == 1 keeps the historical caps bit-identically.  For p != 1 a
+        # match is profitable while distance**p <= trash alternative
+        # (bounded by MTD + MTD_th), so the cap must reach the profitable
+        # radius (MTD + MTD_th)**(1/p) or the chain splitting severs
+        # legitimate transport.
         if MTD_th is None:
+            cap = MTD if p == 1.0 else max(MTD, (2.0 * MTD) ** (1.0 / p))
             super().__init__(
                 emp,
                 theos,
                 distance,
-                max_distance=MTD,
+                max_distance=cap,
                 trash_cost=MTD,
                 method=method,
                 solver=solver,
@@ -832,11 +838,16 @@ class MagnetsteinSolver(ConstrainedSolver):
                 p=p,
             )
         else:
+            cap = (
+                max(MTD, MTD_th)
+                if p == 1.0
+                else max(MTD, MTD_th, (MTD + MTD_th) ** (1.0 / p))
+            )
             super().__init__(
                 emp,
                 theos,
                 distance,
-                max_distance=max(MTD, MTD_th),
+                max_distance=cap,
                 experimental_trash_cost=MTD,
                 theoretical_trash_cost=MTD_th,
                 method=method,
