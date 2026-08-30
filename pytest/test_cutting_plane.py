@@ -52,5 +52,16 @@ def test_cp_result_reporting():
     s = _magnetstein_pair()
     r = s.optimize_cutting_plane()
     assert hasattr(r, "lb") and hasattr(r, "gap") and hasattr(r, "n_cut_repairs")
+    assert hasattr(r, "polish_improved")
     assert r.fun == pytest.approx(r.lb + r.gap, rel=1e-9, abs=1e-12)
     assert r.status in ("converged", "stalled", "max_iter") or r.status.startswith("lp_failed")
+
+
+def test_polish_never_worse_than_pure_cp():
+    s = _magnetstein_pair()
+    r_pure = s.optimize_cutting_plane(polish=False)
+    r_hybrid = s.optimize_cutting_plane(polish=True)
+    assert r_hybrid.fun <= r_pure.fun + 1e-12
+    # The hybrid's point still satisfies the mass constraint.
+    total = float(np.dot(r_hybrid.x, s._theo_totals))
+    assert total == pytest.approx(s._emp_total, rel=1e-6)

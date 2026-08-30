@@ -134,7 +134,12 @@ iterate minimizes the accumulated plane model over the feasible polytope (a
 small LP per iteration).  It returns the best evaluated point together with
 a model lower bound and gap; the mass-balance constraint is carried natively
 by the LP.  Typically converges in 10-40 evaluations and never returns a
-point with higher cost than it evaluated.
+point with higher cost than it evaluated.  By default (`polish=True`) the
+answer is then refined by the class's descent optimizer warm-started from
+the cutting-plane point, and the cheaper of the two is returned — the plane
+model navigates the kinks, the descent finishes the final linear piece, and
+the comparison makes the combination monotone (never worse than either
+stage alone).
 
 ## Key parameters
 

@@ -597,7 +597,11 @@ class DeconvSolver:
         """
         return self.graph.spectrum_proportion_derivatives_fast_approx().astype(float)
 
-    def optimize(self, x0: Optional[np.ndarray] = None) -> OptimizeResult:
+    def optimize(
+        self,
+        x0: Optional[np.ndarray] = None,
+        maxiter: Optional[int] = None,
+    ) -> OptimizeResult:
         """
         Minimize total transport cost over non-negative spectrum proportions.
 
@@ -605,6 +609,9 @@ class DeconvSolver:
         ----------
         x0 : np.ndarray, optional
             Initial proportions. Defaults to a vector of ones.
+        maxiter : int, optional
+            Iteration cap for the inner optimizer (default: the method's
+            own default).
 
         Returns
         -------
@@ -619,13 +626,16 @@ class DeconvSolver:
             self.set_point(w)
             return self.total_cost(), self.gradient()
 
+        options = {"ftol": self._ftol}
+        if maxiter is not None:
+            options["maxiter"] = maxiter
         result = minimize(
             cost_and_grad,
             x0=x0,
             jac=True,
             method="L-BFGS-B",
             bounds=self._budget_bounds(),
-            options={"ftol": self._ftol},
+            options=options,
         )
         self._warn_if_caps_binding(result.x)
         return result
@@ -635,6 +645,7 @@ class DeconvSolver:
         x0: Optional[np.ndarray] = None,
         max_iter: int = 200,
         tol: Optional[float] = None,
+        polish: bool = True,
     ) -> OptimizeResult:
         """Minimize total transport cost with Kelley's cutting-plane method.
 
@@ -654,6 +665,14 @@ class DeconvSolver:
         by the overshoot so they remain lower bounds on the observed data.
         The number of such repairs is reported in the result.
 
+        With ``polish=True`` (the default) the cutting-plane answer is
+        handed to the class's descent optimizer as a warm start and the
+        cheaper of the two evaluated points is returned.  The cut-repair
+        mechanism can starve the plane model and stop it short of the piece
+        floor; a descent polish started inside the correct linear piece has
+        no seams left to be fooled by and finishes it.  The comparison makes
+        the combination monotone: never worse than either stage alone.
+
         Parameters
         ----------
         x0 : np.ndarray, optional
@@ -664,6 +683,9 @@ class DeconvSolver:
             Absolute gap tolerance on ``UB - LB``.  Defaults to
             ``max(1e-9 * max(1, |UB|), 10 * self._ftol)`` (the quantization
             noise floor).
+        polish : bool, optional
+            Warm-start the descent optimizer from the cutting-plane answer
+            and keep the cheaper point (default True).
 
         Returns
         -------
@@ -674,7 +696,9 @@ class DeconvSolver:
             bound on the evaluated data, and quantization notches can then
             push ``gap`` slightly negative); ``gap`` — ``fun - lb``;
             ``nit`` — evaluations used; ``n_cut_repairs`` — cuts shifted to
-            restore validity; ``success`` — gap closed within tolerance.
+            restore validity; ``polish_improved`` — True iff the polished
+            point was cheaper and was returned; ``success`` — gap closed
+            within tolerance (or the polish improved on the model's answer).
         """
         n = len(self.theoretical_spectra)
         if x0 is None:
@@ -686,8 +710,43 @@ class DeconvSolver:
             max_iter=max_iter,
             tol=tol,
         )
+        if polish:
+            result = self._polish(result)
         self._warn_if_caps_binding(result.x)
         return result
+
+    def _polish(self, cp_result: OptimizeResult) -> OptimizeResult:
+        """Warm-start the class's descent optimizer from the cutting-plane
+        answer; keep the cheaper of the two evaluated points."""
+        import warnings
+
+        with warnings.catch_warnings():
+            # The caps-binding warning is re-issued by the caller on the
+            # final point; suppress the inner optimizer's copy.  The polish
+            # only has to finish the current linear piece: cap its
+            # iterations, or a seam-corner warm start can send SLSQP on a
+            # 2000-iteration crawl (observed: 47 min on a 54k-point
+            # spectrum).  The keep-the-cheaper comparison below preserves
+            # the monotone guarantee regardless of where the cap lands.
+            warnings.simplefilter("ignore", RuntimeWarning)
+            descent = self.optimize(
+                x0=np.asarray(cp_result.x, dtype=float), maxiter=100
+            )
+        self.set_point(descent.x)
+        f_descent = float(self.total_cost())
+        self.set_point(cp_result.x)
+        f_cp = float(self.total_cost())
+        improved = f_descent < f_cp
+        if improved:
+            cp_result.x = np.asarray(descent.x, dtype=float)
+            cp_result.fun = f_descent
+            cp_result.gap = f_descent - cp_result.lb
+            cp_result.success = True
+        cp_result.polish_improved = improved
+        cp_result.message += (
+            f"; polish {'improved to ' + format(f_descent, '.6g') if improved else 'kept the cutting-plane point'}"
+        )
+        return cp_result
 
     def _kelley(self, x0, a_eq, b_eq, max_iter, tol) -> OptimizeResult:
         """Shared cutting-plane engine (see :meth:`optimize_cutting_plane`).
@@ -893,7 +952,12 @@ class ConstrainedSolver(DeconvSolver):
             [t.sum_intensities for t in self.theoretical_spectra]
         )
 
-    def optimize(self, x0: Optional[np.ndarray] = None, bounds: Optional[np.array] = None) -> OptimizeResult:
+    def optimize(
+        self,
+        x0: Optional[np.ndarray] = None,
+        bounds: Optional[np.array] = None,
+        maxiter: Optional[int] = None,
+    ) -> OptimizeResult:
         """
         Minimize total transport cost subject to the total-mass constraint.
 
@@ -902,6 +966,8 @@ class ConstrainedSolver(DeconvSolver):
         x0 : np.ndarray, optional
             Initial proportions.  Must satisfy the constraint.  Defaults to
             equal weights scaled to satisfy sum_s(w_s * I_s) = I_emp.
+        maxiter : int, optional
+            SLSQP iteration cap (default 2000).
 
         Returns
         -------
@@ -932,7 +998,10 @@ class ConstrainedSolver(DeconvSolver):
             method="SLSQP",
             bounds=bounds,
             constraints=constraint,
-            options={"maxiter": 2000, "ftol": self._ftol},
+            options={
+                "maxiter": 2000 if maxiter is None else maxiter,
+                "ftol": self._ftol,
+            },
         )
         self._warn_if_caps_binding(result.x)
         return result
@@ -942,13 +1011,16 @@ class ConstrainedSolver(DeconvSolver):
         x0: Optional[np.ndarray] = None,
         max_iter: int = 200,
         tol: Optional[float] = None,
+        polish: bool = True,
     ) -> OptimizeResult:
         """Cutting-plane minimization under the total-mass equality.
 
         Same engine as :meth:`DeconvSolver.optimize_cutting_plane`; the
         constraint ``sum_s(w_s * I_s) = I_emp`` is carried natively by the
-        per-iteration LP instead of SLSQP's iterative enforcement.  See the
-        base method for semantics of the returned result.
+        per-iteration LP instead of SLSQP's iterative enforcement.  With
+        ``polish=True`` (default) the answer is refined by a warm-started
+        SLSQP run and the cheaper evaluated point is returned.  See the base
+        method for semantics of the returned result.
         """
         n = len(self.theoretical_spectra)
         if x0 is None:
@@ -961,6 +1033,8 @@ class ConstrainedSolver(DeconvSolver):
             max_iter=max_iter,
             tol=tol,
         )
+        if polish:
+            result = self._polish(result)
         self._warn_if_caps_binding(result.x)
         return result
 
