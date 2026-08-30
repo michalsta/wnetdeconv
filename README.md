@@ -123,6 +123,19 @@ solver = ConstrainedSolver(
 result = solver.optimize()
 ```
 
+### `optimize_cutting_plane()` — kink-safe alternative optimizer
+
+The objective is convex piecewise linear in the proportions, and descent
+methods (L-BFGS-B, SLSQP) can stall on the kinks between linear pieces when
+several components' spectra overlap heavily.  `optimize_cutting_plane()`
+(on `DeconvSolver` and `ConstrainedSolver`) runs Kelley's cutting-plane
+method instead: each evaluation contributes a supporting plane and the next
+iterate minimizes the accumulated plane model over the feasible polytope (a
+small LP per iteration).  It returns the best evaluated point together with
+a model lower bound and gap; the mass-balance constraint is carried natively
+by the LP.  Typically converges in 10-40 evaluations and never returns a
+point with higher cost than it evaluated.
+
 ## Key parameters
 
 | Parameter | Applies to | Description |

@@ -630,6 +630,168 @@ class DeconvSolver:
         self._warn_if_caps_binding(result.x)
         return result
 
+    def optimize_cutting_plane(
+        self,
+        x0: Optional[np.ndarray] = None,
+        max_iter: int = 200,
+        tol: Optional[float] = None,
+    ) -> OptimizeResult:
+        """Minimize total transport cost with Kelley's cutting-plane method.
+
+        The objective is convex piecewise linear in the proportions (the
+        inner min-cost flow's value is a maximum of linear functions of the
+        supplies), so descent methods that trust a pointwise gradient can
+        stall on the kinks between linear pieces.  Each evaluation here
+        instead contributes a supporting plane ``f(w) >= f(w_i) + g_i (w -
+        w_i)``; the next iterate minimizes the accumulated plane model over
+        the feasible polytope (a small LP), which handles the kinks by
+        modelling them.  Returns the best *evaluated* point, with the model
+        minimum as a certified lower bound.
+
+        Intensity quantization makes the evaluated objective only
+        approximately convex (step-function notches of about one integer
+        unit); cuts found to overshoot an evaluated point are shifted down
+        by the overshoot so they remain lower bounds on the observed data.
+        The number of such repairs is reported in the result.
+
+        Parameters
+        ----------
+        x0 : np.ndarray, optional
+            Initial proportions.  Defaults to a vector of ones.
+        max_iter : int, optional
+            Maximum number of objective evaluations (default 200).
+        tol : float, optional
+            Absolute gap tolerance on ``UB - LB``.  Defaults to
+            ``max(1e-9 * max(1, |UB|), 10 * self._ftol)`` (the quantization
+            noise floor).
+
+        Returns
+        -------
+        scipy.optimize.OptimizeResult
+            ``x`` — best evaluated proportions; ``fun`` — their cost;
+            ``lb`` — model lower bound (a certified bound on the true
+            optimum only when ``n_cut_repairs == 0``; repairs weaken it to a
+            bound on the evaluated data, and quantization notches can then
+            push ``gap`` slightly negative); ``gap`` — ``fun - lb``;
+            ``nit`` — evaluations used; ``n_cut_repairs`` — cuts shifted to
+            restore validity; ``success`` — gap closed within tolerance.
+        """
+        n = len(self.theoretical_spectra)
+        if x0 is None:
+            x0 = np.ones(n)
+        result = self._kelley(
+            x0=np.asarray(x0, dtype=float),
+            a_eq=None,
+            b_eq=None,
+            max_iter=max_iter,
+            tol=tol,
+        )
+        self._warn_if_caps_binding(result.x)
+        return result
+
+    def _kelley(self, x0, a_eq, b_eq, max_iter, tol) -> OptimizeResult:
+        """Shared cutting-plane engine (see :meth:`optimize_cutting_plane`).
+
+        ``a_eq`` / ``b_eq`` optionally impose a linear equality (used by
+        :class:`ConstrainedSolver` for the total-mass constraint)."""
+        from scipy.optimize import linprog
+
+        n = len(self.theoretical_spectra)
+        # Finite LP box from the overflow-budget caps (a component with no
+        # intensity is inert; bound it by 1 to keep the LP bounded).
+        caps = np.array([
+            c if np.isfinite(c) else 1.0 for c in self._w_caps
+        ])
+        bounds = [(0.0, float(c)) for c in caps] + [(None, None)]
+        c_lp = np.zeros(n + 1)
+        c_lp[-1] = 1.0
+        lp_a_eq = None
+        lp_b_eq = None
+        if a_eq is not None:
+            lp_a_eq = np.concatenate([np.asarray(a_eq, float), [0.0]])[None, :]
+            lp_b_eq = np.asarray([b_eq], dtype=float)
+
+        evals_x: list[np.ndarray] = []
+        evals_f: list[float] = []
+        cut_g: list[np.ndarray] = []
+        cut_b: list[float] = []
+        n_repairs = 0
+        best_f = np.inf
+        best_x = np.asarray(x0, dtype=float)
+        lb = -np.inf
+        x = np.clip(np.asarray(x0, dtype=float), 0.0, caps)
+        status = "max_iter"
+        nit = 0
+
+        for nit in range(1, max_iter + 1):
+            self.set_point(x)
+            f = float(self.total_cost())
+            g = np.asarray(self.gradient(), dtype=float)
+            evals_x.append(x.copy())
+            evals_f.append(f)
+            cut_g.append(g)
+            cut_b.append(f - float(g @ x))
+            if f < best_f:
+                best_f = f
+                best_x = x.copy()
+
+            # Repair pass: a valid cut never exceeds the objective at any
+            # evaluated point; shift violating intercepts down (quantization
+            # notches, or an oracle subgradient that is not global).
+            fx = np.asarray(evals_f)
+            xs = np.stack(evals_x)
+            slack = 1e-12 * max(1.0, abs(best_f))
+            for i in range(len(cut_g)):
+                overshoot = float((xs @ cut_g[i] + cut_b[i] - fx).max())
+                if overshoot > slack:
+                    cut_b[i] -= overshoot
+                    n_repairs += 1
+
+            gap_tol = (
+                tol
+                if tol is not None
+                else max(1e-9 * max(1.0, abs(best_f)), 10.0 * self._ftol)
+            )
+            a_ub = np.column_stack([np.stack(cut_g), -np.ones(len(cut_g))])
+            b_ub = -np.asarray(cut_b)
+            lp = linprog(
+                c_lp, A_ub=a_ub, b_ub=b_ub, A_eq=lp_a_eq, b_eq=lp_b_eq,
+                bounds=bounds, method="highs",
+            )
+            if not lp.success:
+                status = f"lp_failed: {lp.message}"
+                break
+            lb = max(lb, float(lp.fun))
+            if best_f - lb <= gap_tol:
+                status = "converged"
+                break
+            x_next = np.clip(lp.x[:n], 0.0, caps)
+            # The model minimizer landing on an already-evaluated point means
+            # the (possibly repaired) model cannot be improved further.
+            if any(
+                np.allclose(x_next, xe, rtol=1e-12, atol=1e-14)
+                for xe in evals_x
+            ):
+                status = "stalled"
+                break
+            x = x_next
+
+        gap = best_f - lb
+        return OptimizeResult(
+            x=best_x,
+            fun=best_f,
+            lb=lb,
+            gap=gap,
+            nit=nit,
+            n_cut_repairs=n_repairs,
+            success=(status == "converged"),
+            status=status,
+            message=(
+                f"cutting-plane: {status}, gap={gap:.3g}, "
+                f"{n_repairs} cut repair(s)"
+            ),
+        )
+
     def no_subgraphs(self) -> int:
         """
         Returns the number of subgraphs in the underlying Wasserstein network.
@@ -771,6 +933,33 @@ class ConstrainedSolver(DeconvSolver):
             bounds=bounds,
             constraints=constraint,
             options={"maxiter": 2000, "ftol": self._ftol},
+        )
+        self._warn_if_caps_binding(result.x)
+        return result
+
+    def optimize_cutting_plane(
+        self,
+        x0: Optional[np.ndarray] = None,
+        max_iter: int = 200,
+        tol: Optional[float] = None,
+    ) -> OptimizeResult:
+        """Cutting-plane minimization under the total-mass equality.
+
+        Same engine as :meth:`DeconvSolver.optimize_cutting_plane`; the
+        constraint ``sum_s(w_s * I_s) = I_emp`` is carried natively by the
+        per-iteration LP instead of SLSQP's iterative enforcement.  See the
+        base method for semantics of the returned result.
+        """
+        n = len(self.theoretical_spectra)
+        if x0 is None:
+            w0 = self._emp_total / self._theo_totals.sum()
+            x0 = np.full(n, w0)
+        result = self._kelley(
+            x0=np.asarray(x0, dtype=float),
+            a_eq=self._theo_totals,
+            b_eq=self._emp_total,
+            max_iter=max_iter,
+            tol=tol,
         )
         self._warn_if_caps_binding(result.x)
         return result
