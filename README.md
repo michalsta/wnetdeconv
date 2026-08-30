@@ -133,6 +133,7 @@ result = solver.optimize()
 | `theoretical_trash_cost` | `DeconvSolver` | Per-unit penalty for discarding theoretical mass. |
 | `precision` | all | Deprecated, no effect; non-default values raise `DeprecationWarning`. |
 | `scale_factor` | all | Override automatic intensity/cost quantisation. |
+| `smooth_sigma` | `MagnetsteinSolver` | Gaussian pre-smoothing width in position units (default 0 = off). On evenly gridded profile 1H NMR, ~0.02 ppm (a typical linewidth) consistently helps when mixture and reference lineshapes differ (e.g. field-inhomogeneity distortion); much wider blurs small components away. Leave off for centroided data. |
 
 ## Distance metrics
 

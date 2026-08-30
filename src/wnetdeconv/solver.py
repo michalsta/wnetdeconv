@@ -819,6 +819,15 @@ class MagnetsteinSolver(ConstrainedSolver):
     independent_trash : bool, optional
         Trash model when ``MTD_th`` is given (default True = independent,
         matching dualdeconv3/4; False = annihilating asymmetric).  See above.
+    smooth_sigma : float, optional
+        Gaussian pre-smoothing width in position units, applied to the
+        empirical and all theoretical spectra before normalization (default
+        0.0 = off).  For evenly gridded 1-D profile data only (see
+        :meth:`Spectrum.smoothed`).  On profile 1H NMR, ~0.02 ppm (a typical
+        linewidth) consistently helps when reference and mixture lineshapes
+        differ — most strongly under field-inhomogeneity distortion — while
+        widths much beyond the linewidth start blurring small components
+        away; leave at 0 for centroided or non-uniformly gridded data.
     """
 
     def __init__(
@@ -833,7 +842,13 @@ class MagnetsteinSolver(ConstrainedSolver):
         precision: float = 1e-3,
         p: float = 1.0,
         independent_trash: bool = True,
+        smooth_sigma: float = 0.0,
     ) -> None:
+        if smooth_sigma > 0:
+            empirical_spectrum = empirical_spectrum.smoothed(smooth_sigma)
+            theoretical_spectra = [
+                t.smoothed(smooth_sigma) for t in theoretical_spectra
+            ]
         emp = empirical_spectrum.normalized()
         theos = [t.normalized() for t in theoretical_spectra]
         # p == 1 keeps the historical caps bit-identically.  For p != 1 a

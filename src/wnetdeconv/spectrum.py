@@ -116,7 +116,49 @@ class Spectrum(Distribution):
             intensities = number * self.intensities,
             label = self.label,
         )
-        return res        
+        return res
+
+    def smoothed(self, sigma: float) -> "Spectrum":
+        """Return a Gaussian-smoothed copy (1-D profile spectra only).
+
+        Convolves the intensities with a Gaussian kernel of standard
+        deviation ``sigma`` (in position units), sampled on the spectrum's
+        own grid with the median grid step.  Total intensity is preserved up
+        to edge truncation.  Intended for evenly gridded profile data; on a
+        strongly non-uniform grid (e.g. centroided MS) the kernel width in
+        points no longer tracks ``sigma`` and the result is not meaningful.
+
+        Parameters
+        ----------
+        sigma : float
+            Gaussian standard deviation in position units.  ``sigma <= 0``
+            returns an unmodified copy.
+        """
+        if self.dimension != 1:
+            raise ValueError("smoothed() supports 1-D spectra only")
+        if sigma <= 0:
+            return self.copy()
+        pos = np.asarray(self.positions[0], dtype=float)
+        order = np.argsort(pos)
+        pos_sorted = pos[order]
+        ints_sorted = np.asarray(self.intensities, dtype=float)[order]
+        steps = np.diff(pos_sorted)
+        if steps.size == 0:
+            return self.copy()
+        step = float(np.median(steps))
+        if not step > 0:
+            raise ValueError("smoothed() requires distinct positions")
+        half = int(np.ceil(4.0 * sigma / step))
+        kernel = np.exp(
+            -0.5 * ((np.arange(-half, half + 1) * step) / sigma) ** 2
+        )
+        kernel /= kernel.sum()
+        smoothed = np.convolve(ints_sorted, kernel, mode="same")
+        return Spectrum(
+            positions=pos_sorted[np.newaxis, :],
+            intensities=smoothed,
+            label=self.label,
+        )
 
 
 def Spectrum_1D(
