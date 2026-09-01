@@ -1,13 +1,13 @@
 [build-system]
-requires = ["scikit-build-core", "nanobind", "pylmcf", "wnet>=1.3.0"]
+requires = ["scikit-build-core", "nanobind>=3.0.1", "pylmcf>=1.2.0", "wnet>=1.5.0"]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "wnetdeconv"
-version = "0.10.0"
+version = "0.11.0"
 description = "Python implementation of spectral deconvolution using Wasserstein metric"
-requires-python = ">=3.9"
-dependencies = ["pylmcf", "numpy", "scipy", "wnet>=1.3.0"]
+requires-python = ">=3.10"
+dependencies = ["pylmcf>=1.2.0", "numpy", "scipy", "wnet>=1.5.0", "nanobind-backend>=1.0; implementation_name == 'cpython'"]
 authors = [{ name="Michał Startek", email="michal.startek@mimuw.edu.pl" }]
 maintainers = [{ name="Michał Startek", email="michal.startek@mimuw.edu.pl" }]
 readme = "README.md"
@@ -30,6 +30,15 @@ pytest = ["pytest", "pandas"]
 
 [tool.pytest.ini_options]
 testpaths = ["pytest"]
+
+[tool.scikit-build]
+# Split-mode extensions are stable-ABI builds. Declaring the target here gets the
+# wheel an `abi3` tag, and nanobind reads it back as SKBUILD_SABI_VERSION to set
+# the stable ABI floor, so the two can never drift apart. One wheel per platform
+# then covers every Python from 3.10 up. Ignored automatically on PyPy and on
+# free-threaded interpreters, which is exactly when CMake falls back to a linked
+# build.
+wheel.py-api = "cp310"
 
 [tool.scikit-build.sdist]
 exclude = [
