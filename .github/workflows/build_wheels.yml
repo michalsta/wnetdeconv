@@ -235,7 +235,7 @@ jobs:
       - name: Smoke-test the compiled extension, and check it reports linked
         run: |
           cd "$(mktemp -d)"
-          /venv/bin/python -c 'import wnetdeconv; from wnetdeconv import wnetdeconv_cpp; print('wnetdeconv OK', wnetdeconv_cpp)'
+          /venv/bin/python -c 'import wnetdeconv; from wnetdeconv import wnetdeconv_cpp; print("wnetdeconv OK", wnetdeconv_cpp)'
           /venv/bin/python -c 'import wnetdeconv; assert not wnetdeconv.is_nanobind_split(), "musl must fall back to a linked build"'
       - name: Run the test suite
         run: |
