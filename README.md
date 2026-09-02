@@ -182,7 +182,7 @@ wnetdeconv
 │                              restores the annihilating model)
 ├── MassersteinSolver2       — reproduces masserstein's dualdeconv2 (one-sided trash)
 └── MassersteinSolver4       — reproduces dualdeconv4 (independent two-sided trash);
-                               requires wnet >= 1.4.0 (independent trash)
+                               requires wnet >= 1.3.0 (independent trash)
 ```
 
 The underlying min-cost flow is provided by
