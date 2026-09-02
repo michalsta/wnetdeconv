@@ -32,7 +32,7 @@ jobs:
           fetch-depth: 0
 
       # Used to host cibuildwheel
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
 
       - name: Check version
         # Only meaningful on a tag: check_version.py compares pyproject against
@@ -141,7 +141,7 @@ jobs:
           pattern: cibw-wheels-ubuntu-latest-*
           path: dist
           merge-multiple: true
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.15"
           allow-prereleases: true
@@ -182,7 +182,7 @@ jobs:
           pattern: cibw-wheels-ubuntu-latest-*
           path: dist
           merge-multiple: true
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.15"
           allow-prereleases: true
@@ -276,7 +276,7 @@ jobs:
         with:
           name: cibw-sdist
           path: dist
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14t"
       - name: Install from sdist (compiles the extension in linked mode)
@@ -317,7 +317,7 @@ jobs:
           name: cibw-sdist
           path: dist
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "pypy3.11"
 
