@@ -336,12 +336,14 @@ jobs:
           python-version: "pypy3.11"
 
       - name: Install OpenBLAS and a Fortran compiler
-        # scipy is a runtime dependency of wnetdeconv, and it publishes no PyPy
-        # wheels at any version -- nor does numpy -- so pip builds both from
-        # source here. Their meson builds locate BLAS/LAPACK through pkg-config,
-        # and with no openblas.pc on the runner scipy stops dead at
-        # 'Dependency "OpenBLAS" not found (tried pkg-config and cmake)'.
-        # gfortran is scipy's other unmet build requirement on this image.
+        # scipy is a runtime dependency of wnetdeconv and publishes no PyPy
+        # wheels at any version, so pip builds it from source here -- a 30 MB
+        # sdist and roughly fifteen minutes of this job's runtime. Its meson
+        # build locates BLAS/LAPACK through pkg-config, and with no openblas.pc
+        # on the runner it stops dead at 'Dependency "OpenBLAS" not found
+        # (tried pkg-config and cmake)'. gfortran is its other unmet build
+        # requirement on this image. numpy is fine: it still ships PyPy wheels
+        # up to 2.4.6, which is what pip resolves back to here.
         run: |
           sudo apt-get update
           sudo apt-get install -y libopenblas-dev pkg-config gfortran
