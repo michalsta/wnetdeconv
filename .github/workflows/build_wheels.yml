@@ -335,6 +335,17 @@ jobs:
         with:
           python-version: "pypy3.11"
 
+      - name: Install OpenBLAS and a Fortran compiler
+        # scipy is a runtime dependency of wnetdeconv, and it publishes no PyPy
+        # wheels at any version -- nor does numpy -- so pip builds both from
+        # source here. Their meson builds locate BLAS/LAPACK through pkg-config,
+        # and with no openblas.pc on the runner scipy stops dead at
+        # 'Dependency "OpenBLAS" not found (tried pkg-config and cmake)'.
+        # gfortran is scipy's other unmet build requirement on this image.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenblas-dev pkg-config gfortran
+
       - name: Install from sdist (compiles the extension in linked mode)
         run: |
           python -VV
