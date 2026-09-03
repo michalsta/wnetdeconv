@@ -75,9 +75,9 @@ def _require_independent_trash_support() -> None:
     raise RuntimeError(
         "MassersteinSolver4 (dualdeconv4) requires wnet's independent-trash "
         "model, but the installed wnet does not expose "
-        f"'{_INDEPENDENT_TRASH_METHOD}'. It is part of wnet main since version "
-        "1.4.0; upgrade with:\n"
-        "    pip install --upgrade 'wnet>=1.4.0'\n"
+        f"'{_INDEPENDENT_TRASH_METHOD}'. It is part of wnet since version "
+        "1.3.0; upgrade with:\n"
+        "    pip install --upgrade 'wnet>=1.3.0'\n"
         "Use MassersteinSolver2 (dualdeconv2) if you do not need the "
         "two-sided independent denoising penalty."
     )
@@ -154,7 +154,7 @@ class DeconvSolver:
         Wasserstein transport order (default 1.0).  Matching a unit across
         distance ``d`` costs ``d**p``, so ``total_cost()`` and gradients are
         in W_p**p units.  For ``p != 1`` on 1-D data the chain-native
-        ConvexSweep solver (wnet >= 1.4.0) is the default; any explicitly
+        ConvexSweep solver (wnet >= 1.3.0) is the default; any explicitly
         requested other solver forces the dense factory.
 
     Attributes
@@ -357,7 +357,7 @@ class DeconvSolver:
             # provided.  wnet >= 1.3.0's wrapper raises on solver+method
             # together, so drop the ignored one here.
             method = None
-        # Independent trash rides the chain only under SlopeDP (wnet >= 1.4.0
+        # Independent trash rides the chain only under SlopeDP (wnet >= 1.3.0
         # prices it analytically there; the per-match cost shift cannot ride
         # chain hop arcs, so any other solver forces the dense factory).  The
         # chain-native SlopeDP default therefore applies to it as well.
@@ -367,7 +367,7 @@ class DeconvSolver:
         ):
             if solver is None and method is None:
                 # SlopeDP is the chain-native exact solver for p == 1;
-                # ConvexSweep (wnet >= 1.4.0) is its analogue for p > 1.
+                # ConvexSweep (wnet >= 1.3.0) is its analogue for p > 1.
                 solver = _SlopeDP() if p == 1.0 else _ConvexSweep()
             elif (
                 isinstance(solver, _NSConfig)

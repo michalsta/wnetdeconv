@@ -1,7 +1,7 @@
 """MassersteinSolver4 (dualdeconv4 reproduction, independent trash).
 
 Skipped when the installed wnet predates add_independent_asymmetric_trash
-(wnet < 1.4.0). Expected values below were produced by masserstein's own
+(wnet < 1.3.0). Expected values below were produced by masserstein's own
 dualdeconv4 on the identical inputs (penalty=0.5, penalty_th=1.0):
 probs = [0.8, 0.0], fun = 0.26.
 """
@@ -14,7 +14,7 @@ from wnetdeconv.solver import _wnet_supports_independent_trash
 
 pytestmark = pytest.mark.skipif(
     not _wnet_supports_independent_trash(),
-    reason="installed wnet lacks add_independent_asymmetric_trash (< 1.4.0)",
+    reason="installed wnet lacks add_independent_asymmetric_trash (< 1.3.0)",
 )
 
 
