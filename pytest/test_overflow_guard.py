@@ -31,14 +31,31 @@ def make_solver():
     )
 
 
+def test_true_proportions_are_exactly_zero_cost():
+    solver = make_solver()
+    solver.set_point([5.0, 10.0])
+    assert solver.total_cost() == pytest.approx(0.0, abs=1e-6)
+
+
 def test_readme_example_optimizes_to_true_proportions():
     solver = make_solver()
     result = solver.optimize()
-    # Intensity quantization (sf_intensity == 5 here) makes cost-0 a plateau
-    # about 0.1 wide in each proportion, so match to that granularity.
     assert np.allclose(result.x, [5.0, 10.0], atol=0.1), result.x
     solver.set_point(result.x)
-    assert solver.total_cost() == pytest.approx(0.0, abs=1e-6)
+    # The cost-0 set is not a symmetric plateau around [5, 10].  Intensity
+    # quantization floors the supplies to floor(10*w1) and floor(15*w2)
+    # (sf_intensity == 5 here), and cost 0 needs exactly 50 and 150, so the
+    # zero-cost region is the half-open box [5, 5.1) x [10, 10 + 1/15) --
+    # anchored at the true proportions and extending only upwards.  The
+    # objective is a staircase, its exact marginal never vanishes (the
+    # gradient at a cost-0 point is the price of one more supply unit), and
+    # L-BFGS-B therefore stops on a failed line search at a point decided by
+    # rounding: within atol of the truth, but not reliably inside that box.
+    # Assert what a descent method can actually promise here -- within one
+    # quantized supply unit of the optimum, which is the trash price of one
+    # unit, trash_cost / sf_intensity.
+    one_unit = 100.0 / solver.sf_intensity
+    assert solver.total_cost() <= one_unit + 1e-6, result.x
 
 
 def test_cost_stays_nonnegative_at_large_in_budget_points():
