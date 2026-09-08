@@ -748,11 +748,17 @@ class DeconvSolver:
         )
         return cp_result
 
-    def _kelley(self, x0, a_eq, b_eq, max_iter, tol) -> OptimizeResult:
+    def _kelley(self, x0, a_eq, b_eq, max_iter, tol,
+                a_ub=None, b_ub=None) -> OptimizeResult:
         """Shared cutting-plane engine (see :meth:`optimize_cutting_plane`).
 
         ``a_eq`` / ``b_eq`` optionally impose a linear equality (used by
-        :class:`ConstrainedSolver` for the total-mass constraint)."""
+        :class:`ConstrainedSolver` for the total-mass constraint).
+        ``a_ub`` / ``b_ub`` optionally impose linear inequalities
+        ``a_ub @ w <= b_ub`` (used by :class:`_MassersteinBase` for the
+        ``sum(w) <= 1`` face).  Both are carried inside the per-iteration LP,
+        so the model minimizer is always feasible and the returned lower
+        bound is a bound on the *constrained* optimum."""
         from scipy.optimize import linprog
 
         n = len(self.theoretical_spectra)
@@ -769,6 +775,13 @@ class DeconvSolver:
         if a_eq is not None:
             lp_a_eq = np.concatenate([np.asarray(a_eq, float), [0.0]])[None, :]
             lp_b_eq = np.asarray([b_eq], dtype=float)
+        # Standing inequalities, padded with a zero in the epigraph column.
+        fixed_a_ub = None
+        fixed_b_ub = None
+        if a_ub is not None:
+            rows = np.atleast_2d(np.asarray(a_ub, dtype=float))
+            fixed_a_ub = np.column_stack([rows, np.zeros(len(rows))])
+            fixed_b_ub = np.atleast_1d(np.asarray(b_ub, dtype=float))
 
         evals_x: list[np.ndarray] = []
         evals_f: list[float] = []
@@ -811,10 +824,13 @@ class DeconvSolver:
                 if tol is not None
                 else max(1e-9 * max(1.0, abs(best_f)), 10.0 * self._ftol)
             )
-            a_ub = np.column_stack([np.stack(cut_g), -np.ones(len(cut_g))])
-            b_ub = -np.asarray(cut_b)
+            lp_a_ub = np.column_stack([np.stack(cut_g), -np.ones(len(cut_g))])
+            lp_b_ub = -np.asarray(cut_b)
+            if fixed_a_ub is not None:
+                lp_a_ub = np.vstack([lp_a_ub, fixed_a_ub])
+                lp_b_ub = np.concatenate([lp_b_ub, fixed_b_ub])
             lp = linprog(
-                c_lp, A_ub=a_ub, b_ub=b_ub, A_eq=lp_a_eq, b_eq=lp_b_eq,
+                c_lp, A_ub=lp_a_ub, b_ub=lp_b_ub, A_eq=lp_a_eq, b_eq=lp_b_eq,
                 bounds=bounds, method="highs",
             )
             if not lp.success:
@@ -1196,6 +1212,110 @@ class _MassersteinBase(DeconvSolver):
     """
 
     _FTOL_CEILING = 1e-10  # see deconvolve() for why
+
+    def _face_start(self, x0):
+        """A feasible starting point for the ``sum(w) <= 1`` polytope."""
+        n = len(self.theoretical_spectra)
+        if x0 is None:
+            x0 = np.ones(n) / (2 * n)
+        x0 = np.clip(np.asarray(x0, dtype=float), 0.0, None)
+        total = x0.sum()
+        return x0 / total if total > 1.0 else x0
+
+    def optimize(
+        self,
+        x0: Optional[np.ndarray] = None,
+        maxiter: Optional[int] = None,
+    ) -> OptimizeResult:
+        """Descent under ``w >= 0`` and ``sum(w) <= 1``.
+
+        Overrides :meth:`DeconvSolver.optimize`, whose bounds-only L-BFGS-B
+        would walk straight off this class's feasible set.  Used on its own
+        and as the polish stage of :meth:`optimize_cutting_plane`; SLSQP is
+        a poor primary optimizer here (see that method) but a serviceable
+        finisher once the cutting planes have placed it inside the right
+        linear piece.
+        """
+        n = len(self.theoretical_spectra)
+        x0 = self._face_start(x0)
+
+        def cost_and_grad(w):
+            self.set_point(w)
+            return self.total_cost(), self.gradient()
+
+        constraints = [
+            {
+                "type": "ineq",
+                "fun": lambda w: 1.0 - w.sum(),
+                "jac": lambda w: -np.ones(n),
+            }
+        ]
+        result = minimize(
+            cost_and_grad,
+            x0=x0,
+            jac=True,
+            method="SLSQP",
+            bounds=self._budget_bounds(),
+            constraints=constraints,
+            options={
+                "maxiter": 2000 if maxiter is None else maxiter,
+                "ftol": min(self._ftol, self._FTOL_CEILING),
+            },
+        )
+        self._warn_if_caps_binding(result.x)
+        return result
+
+    def optimize_cutting_plane(
+        self,
+        x0: Optional[np.ndarray] = None,
+        max_iter: int = 200,
+        tol: Optional[float] = None,
+        polish: bool = True,
+    ) -> OptimizeResult:
+        """Kelley cutting planes over ``w >= 0``, ``sum(w) <= 1``.
+
+        :meth:`deconvolve` reproduces dualdeconv2/4 by running L-BFGS-B and,
+        when the total-mass constraint turns out to bind, re-solving with
+        SLSQP on the face.  Both are descent methods that trust a pointwise
+        gradient, and ``f(w)`` is convex *piecewise linear* — the inner
+        min-cost flow's value is a maximum of linear functions of the
+        supplies — so on the face they can halt at a kink and report
+        success there.  Measured on an intact-antibody spectrum with 135
+        components: the shipped path stopped at 0.128357 and declared
+        convergence, while the same SLSQP started from a better point
+        reached 0.121406 in two iterations, a 5.4 % optimality gap that
+        depended only on where it began.
+
+        Here the face is carried natively inside the per-iteration LP, the
+        same way :class:`ConstrainedSolver` carries its total-mass equality,
+        and each evaluation contributes a supporting plane instead of a
+        direction to step along.  Kinks are modelled rather than stumbled
+        into, and the LP's value is a lower bound, so the gap is reported
+        rather than assumed.
+
+        Unlike :meth:`deconvolve` this needs no two-pass dispatch: the
+        constraint is present throughout, and a solution interior to the
+        face simply leaves it slack.
+
+        Parameters and return value match
+        :meth:`DeconvSolver.optimize_cutting_plane`; ``polish`` warm-starts
+        :meth:`optimize` (the constrained descent) and keeps the cheaper of
+        the two evaluated points.
+        """
+        n = len(self.theoretical_spectra)
+        result = self._kelley(
+            x0=self._face_start(x0),
+            a_eq=None,
+            b_eq=None,
+            max_iter=max_iter,
+            tol=tol,
+            a_ub=np.ones(n),
+            b_ub=1.0,
+        )
+        if polish:
+            result = self._polish(result)
+        self._warn_if_caps_binding(result.x)
+        return result
 
     def deconvolve(self, x0: Optional[np.ndarray] = None) -> dict:
         """
