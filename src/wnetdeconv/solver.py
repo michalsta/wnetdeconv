@@ -600,7 +600,9 @@ class DeconvSolver:
     def optimize(
         self,
         x0: Optional[np.ndarray] = None,
+        bounds: Optional[np.array] = None,
         maxiter: Optional[int] = None,
+        print_steps: bool = False,
     ) -> OptimizeResult:
         """
         Minimize total transport cost over non-negative spectrum proportions.
@@ -612,6 +614,8 @@ class DeconvSolver:
         maxiter : int, optional
             Iteration cap for the inner optimizer (default: the method's
             own default).
+        print_steps : bool
+            Prints gradient descent steps for diagnostics purposes.
 
         Returns
         -------
@@ -621,20 +625,31 @@ class DeconvSolver:
         n = len(self.theoretical_spectra)
         if x0 is None:
             x0 = np.ones(n)
+        if bounds is None:
+            bounds = self._budget_bounds()
 
+        # def cost_and_grad(w):
+        #     self.set_point(w)
+        #     return self.total_cost(), self.gradient()
+
+        step = [0]
         def cost_and_grad(w):
             self.set_point(w)
-            return self.total_cost(), self.gradient()
+            c, g = self.total_cost(), self.gradient()
+            if print_steps: print(f"step {step[0]:3d}  point=[{', '.join(f"{x:8.4f}" for x in w)}]  cost={c:8.4f}  grad=[{', '.join(f"{x:8.4f}" for x in g)}]")
+            step[0] += 1
+            return c, g
 
         options = {"ftol": self._ftol}
         if maxiter is not None:
             options["maxiter"] = maxiter
+
         result = minimize(
             cost_and_grad,
             x0=x0,
             jac=True,
             method="L-BFGS-B",
-            bounds=self._budget_bounds(),
+            bounds=bounds,
             options=options,
         )
         self._warn_if_caps_binding(result.x)
@@ -992,14 +1007,23 @@ class ConstrainedSolver(DeconvSolver):
         """
         n = len(self.theoretical_spectra)
         if x0 is None:
-            w0 = self._emp_total / self._theo_totals.sum()
+            w0 = self._emp_total / self._theo_totals.sum() # if spectra are normalized it's the same as x0 = np.ones(n)
             x0 = np.full(n, w0)
         if bounds is None:
             bounds = self._budget_bounds()
 
+        # def cost_and_grad(w):
+        #     self.set_point(w)
+        #     return self.total_cost(), self.gradient()
+
+        step = [0]
         def cost_and_grad(w):
             self.set_point(w)
-            return self.total_cost(), self.gradient()
+            c = self.total_cost()
+            g = self.gradient()
+            print(f"step {step[0]:3d}  point=[{', '.join(f"{x:8.4f}" for x in w)}]  cost={c:8.4f}  grad=[{', '.join(f"{x:8.4f}" for x in g)}]")
+            step[0] += 1
+            return c, g        
 
         constraint = {
             "type": "eq",
@@ -1011,7 +1035,7 @@ class ConstrainedSolver(DeconvSolver):
             cost_and_grad,
             x0=x0,
             jac=True,
-            method="SLSQP",
+            method="SLSQP", # L-BFGS-B does not allow constraints
             bounds=bounds,
             constraints=constraint,
             options={
