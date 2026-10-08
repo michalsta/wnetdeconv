@@ -2,6 +2,9 @@
 
 Spectral deconvolution via Wasserstein optimal transport.
 
+NetworkSimplex variants support certified cutting planes with adaptive supply
+precision. See [Certified cutting planes](docs/certified_cutting_planes.md).
+
 Given an empirical spectrum and a library of theoretical component spectra,
 `wnetdeconv` finds the mixture proportions that minimise the total Wasserstein
 transport cost between the empirical signal and the weighted sum of components.

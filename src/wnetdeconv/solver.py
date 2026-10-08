@@ -13,6 +13,37 @@ from wnet.distances import DistanceMetric
 _INDEPENDENT_TRASH_METHOD = "add_independent_asymmetric_trash"
 
 
+def _cut_model_lower_bound(lp, gradients, intercepts, caps, fixed_a=None,
+                           fixed_b=None, a_eq=None, b_eq=None):
+    """Feasible Lagrangian bound, even when the master LP has residuals.
+
+    Normalize nonnegative cut weights to cancel the unbounded epigraph
+    variable, then minimize the resulting affine function over the finite
+    box. Standing constraint multipliers need no stationarity assumption.
+    """
+    dtype = np.longdouble
+    weights = np.maximum(-np.asarray(lp.ineqlin.marginals, dtype=dtype), 0)
+    count = len(intercepts)
+    mass = weights[:count].sum()
+    if not mass > 0:
+        weights = np.zeros_like(weights)
+        weights[0] = mass = 1
+    weights /= mass
+    coefficient = weights[:count] @ np.asarray(gradients, dtype=dtype)
+    constant = weights[:count] @ np.asarray(intercepts, dtype=dtype)
+    if fixed_a is not None:
+        coefficient += weights[count:] @ np.asarray(fixed_a[:, :-1], dtype=dtype)
+        constant -= weights[count:] @ np.asarray(fixed_b, dtype=dtype)
+    if a_eq is not None:
+        multiplier = -dtype(lp.eqlin.marginals[0]) / mass
+        coefficient += multiplier * np.asarray(a_eq, dtype=dtype)
+        constant -= multiplier * dtype(b_eq)
+    box = np.asarray(caps, dtype=dtype)
+    bound = constant + np.minimum(coefficient, 0) @ box
+    cushion = 64 * np.finfo(float).eps * (1 + abs(constant) + np.abs(coefficient) @ box)
+    return float(bound - cushion)
+
+
 def _check_rounding_loss(empirical, theoreticals, sf, max_dropped_fraction):
     """Python mirror of wnet's ``ScalerBase::check_rounding_loss``: intensities
     quantize to integer supplies as round-toward-zero(intensity * sf), and this
@@ -662,58 +693,30 @@ class DeconvSolver:
         tol: Optional[float] = None,
         polish: bool = True,
     ) -> OptimizeResult:
-        """Minimize total transport cost with Kelley's cutting-plane method.
+        """Minimize transport cost with Kelley cutting planes.
 
-        The objective is convex piecewise linear in the proportions (the
-        inner min-cost flow's value is a maximum of linear functions of the
-        supplies), so descent methods that trust a pointwise gradient can
-        stall on the kinks between linear pieces.  Each evaluation here
-        instead contributes a supporting plane ``f(w) >= f(w_i) + g_i (w -
-        w_i)``; the next iterate minimizes the accumulated plane model over
-        the feasible polytope (a small LP), which handles the kinks by
-        modelling them.  Returns the best *evaluated* point, with the model
-        minimum as a certified lower bound.
+        NetworkSimplex variants construct common feasible dual cuts for the
+        continuous-supply objective with fixed quantized costs. Integer solves
+        provide upper bounds including explicit supply-rounding uncertainty.
+        Precision is refined adaptively; rebuilding clears all cuts and bounds
+        because the cost scale may change. No generic LP transport backend is
+        used. The small master LP optimizes mixture weights only.
 
-        Intensity quantization makes the evaluated objective only
-        approximately convex (step-function notches of about one integer
-        unit); cuts found to overshoot an evaluated point are shifted down
-        by the overshoot so they remain lower bounds on the observed data.
-        The number of such repairs is reported in the result.
+        Other backends retain the legacy marginal-cut search and return
+        ``bound_certified=False`` and ``success=False``; their model gap is
+        diagnostic, not an optimality certificate.
 
-        With ``polish=True`` (the default) the cutting-plane answer is
-        handed to the class's descent optimizer as a warm start and the
-        cheaper of the two evaluated points is returned.  The cut-repair
-        mechanism can starve the plane model and stop it short of the piece
-        floor; a descent polish started inside the correct linear piece has
-        no seams left to be fooled by and finishes it.  The comparison makes
-        the combination monotone: never worse than either stage alone.
+        ``tol`` is a positive absolute objective-gap tolerance (default 1e-9).
+        ``max_iter`` bounds oracle evaluations (default 200). ``polish`` runs
+        descent from the selected point and keeps an improvement without
+        treating improvement alone as convergence.
 
-        Parameters
-        ----------
-        x0 : np.ndarray, optional
-            Initial proportions.  Defaults to a vector of ones.
-        max_iter : int, optional
-            Maximum number of objective evaluations (default 200).
-        tol : float, optional
-            Absolute gap tolerance on ``UB - LB``.  Defaults to
-            ``max(1e-9 * max(1, |UB|), 10 * self._ftol)`` (the quantization
-            noise floor).
-        polish : bool, optional
-            Warm-start the descent optimizer from the cutting-plane answer
-            and keep the cheaper point (default True).
-
-        Returns
-        -------
-        scipy.optimize.OptimizeResult
-            ``x`` — best evaluated proportions; ``fun`` — their cost;
-            ``lb`` — model lower bound (a certified bound on the true
-            optimum only when ``n_cut_repairs == 0``; repairs weaken it to a
-            bound on the evaluated data, and quantization notches can then
-            push ``gap`` slightly negative); ``gap`` — ``fun - lb``;
-            ``nit`` — evaluations used; ``n_cut_repairs`` — cuts shifted to
-            restore validity; ``polish_improved`` — True iff the polished
-            point was cheaper and was returned; ``success`` — gap closed
-            within tolerance (or the polish improved on the model's answer).
+        The result includes ``fun`` (rounded network cost), ``upper_bound``
+        (continuous objective upper bound), ``lb``, ``gap=upper_bound-lb``,
+        ``rounding_error``, ``bound_certified``, ``n_precision_refinements``,
+        ``n_cut_repairs`` and ``polish_improved``. A certified success requires
+        a nonnegative gap no larger than ``tol``. Bounds use fixed quantized
+        edge costs, rather than claiming exact original real cost coefficients.
         """
         n = len(self.theoretical_spectra)
         if x0 is None:
@@ -729,6 +732,23 @@ class DeconvSolver:
             result = self._polish(result)
         self._warn_if_caps_binding(result.x)
         return result
+
+    def refine_intensity_precision(self, factor: float = 10.0) -> None:
+        """Rebuild the same network at finer supply precision with safe cost scaling.
+
+        Topology/trash semantics and solver variant stay unchanged. A rebuild
+        invalidates the old basis and cuts because quantized costs may change.
+        """
+        if not np.isfinite(factor) or factor <= 1:
+            raise ValueError("Precision factor must be finite and greater than one")
+        new_scale = self.sf_intensity * factor
+        if not np.isfinite(new_scale):
+            raise ValueError("Refined intensity scale must be finite")
+        self.graph.refine_intensity_precision(factor)
+        self.sf_intensity = new_scale
+        self.scale_factor = self.graph.scale_factor()
+        self._ftol = 1.0 / (self.scale_factor * new_scale)
+        self.point = None
 
     def _polish(self, cp_result: OptimizeResult) -> OptimizeResult:
         """Warm-start the class's descent optimizer from the cutting-plane
@@ -755,8 +775,18 @@ class DeconvSolver:
         if improved:
             cp_result.x = np.asarray(descent.x, dtype=float)
             cp_result.fun = f_descent
-            cp_result.gap = f_descent - cp_result.lb
-            cp_result.success = True
+            if cp_result.get("bound_certified", False):
+                self.set_point(descent.x)
+                certificate = self.graph.dual_cut()
+                cp_result.upper_bound = certificate["upper_bound"]
+                cp_result.rounding_error = certificate["rounding_error"]
+                cp_result.gap = cp_result.upper_bound - cp_result.lb
+                cp_result.success = 0 <= cp_result.gap <= cp_result.gap_tolerance
+                if cp_result.success:
+                    cp_result.status = "converged"
+            else:
+                cp_result.gap = f_descent - cp_result.lb
+        self.set_point(cp_result.x)
         cp_result.polish_improved = improved
         cp_result.message += (
             f"; polish {'improved to ' + format(f_descent, '.6g') if improved else 'kept the cutting-plane point'}"
@@ -798,47 +828,60 @@ class DeconvSolver:
             fixed_a_ub = np.column_stack([rows, np.zeros(len(rows))])
             fixed_b_ub = np.atleast_1d(np.asarray(b_ub, dtype=float))
 
+        from wnet.wnet_cpp import NetworkSimplex
+        certified = isinstance(self.graph._solver, NetworkSimplex)
         evals_x: list[np.ndarray] = []
         evals_f: list[float] = []
         cut_g: list[np.ndarray] = []
         cut_b: list[float] = []
         n_repairs = 0
+        n_refinements = 0
         best_f = np.inf
+        best_upper = np.inf
+        best_error = np.inf
         best_x = np.asarray(x0, dtype=float)
         lb = -np.inf
         x = np.clip(np.asarray(x0, dtype=float), 0.0, caps)
         status = "max_iter"
         nit = 0
+        gap_tol = tol if tol is not None else 1e-9
+        if not np.isfinite(gap_tol) or gap_tol <= 0:
+            raise ValueError("Gap tolerance must be finite and positive")
+        if max_iter < 1:
+            raise ValueError("max_iter must be positive")
 
         for nit in range(1, max_iter + 1):
             self.set_point(x)
-            f = float(self.total_cost())
-            g = np.asarray(self.gradient(), dtype=float)
+            if certified:
+                certificate = self.graph.dual_cut()
+                f = float(certificate["rounded_cost"])
+                g = np.asarray(certificate["gradient"], dtype=float)
+                intercept = float(certificate["intercept"])
+                upper = float(certificate["upper_bound"])
+                error = float(certificate["rounding_error"])
+            else:
+                f = float(self.total_cost())
+                # Legacy backends retain their heuristic search, but its cuts
+                # and success flag are explicitly not an optimality certificate.
+                g = np.asarray(self.gradient(), dtype=float)
+                intercept = f - float(g @ x)
+                upper, error = f, np.nan
             evals_x.append(x.copy())
             evals_f.append(f)
             cut_g.append(g)
-            cut_b.append(f - float(g @ x))
-            if f < best_f:
-                best_f = f
-                best_x = x.copy()
+            cut_b.append(intercept)
+            if upper < best_upper:
+                best_f, best_upper, best_error, best_x = f, upper, error, x.copy()
 
-            # Repair pass: a valid cut never exceeds the objective at any
-            # evaluated point; shift violating intercepts down (quantization
-            # notches, or an oracle subgradient that is not global).
-            fx = np.asarray(evals_f)
-            xs = np.stack(evals_x)
-            slack = 1e-12 * max(1.0, abs(best_f))
-            for i in range(len(cut_g)):
-                overshoot = float((xs @ cut_g[i] + cut_b[i] - fx).max())
-                if overshoot > slack:
-                    cut_b[i] -= overshoot
-                    n_repairs += 1
+            if not certified:
+                fx, xs = np.asarray(evals_f), np.stack(evals_x)
+                slack = 1e-12 * max(1.0, abs(best_f))
+                for i in range(len(cut_g)):
+                    overshoot = float((xs @ cut_g[i] + cut_b[i] - fx).max())
+                    if overshoot > slack:
+                        cut_b[i] -= overshoot
+                        n_repairs += 1
 
-            gap_tol = (
-                tol
-                if tol is not None
-                else max(1e-9 * max(1.0, abs(best_f)), 10.0 * self._ftol)
-            )
             lp_a_ub = np.column_stack([np.stack(cut_g), -np.ones(len(cut_g))])
             lp_b_ub = -np.asarray(cut_b)
             if fixed_a_ub is not None:
@@ -847,39 +890,63 @@ class DeconvSolver:
             lp = linprog(
                 c_lp, A_ub=lp_a_ub, b_ub=lp_b_ub, A_eq=lp_a_eq, b_eq=lp_b_eq,
                 bounds=bounds, method="highs",
+                options={"dual_feasibility_tolerance": 1e-10, "primal_feasibility_tolerance": 1e-10},
             )
             if not lp.success:
                 status = f"lp_failed: {lp.message}"
                 break
-            lb = max(lb, float(lp.fun))
-            if best_f - lb <= gap_tol:
+            # Modified/repaired models invalidate historical maxima. For the
+            # certified path cuts only accumulate between precision rebuilds.
+            candidate_lb = _cut_model_lower_bound(
+                lp, cut_g, cut_b, caps, fixed_a_ub, fixed_b_ub, a_eq, b_eq
+            )
+            lb = max(lb, candidate_lb) if certified else candidate_lb
+            gap = best_upper - lb
+            if gap < -gap_tol:
+                status = "invalid_bound"
+                break
+            if 0 <= gap <= gap_tol:
                 status = "converged"
                 break
             x_next = np.clip(lp.x[:n], 0.0, caps)
-            # The model minimizer landing on an already-evaluated point means
-            # the (possibly repaired) model cannot be improved further.
-            if any(
-                np.allclose(x_next, xe, rtol=1e-12, atol=1e-14)
-                for xe in evals_x
-            ):
+            repeated = any(np.allclose(x_next, xe, rtol=1e-12, atol=1e-14) for xe in evals_x)
+            if certified and best_error > gap_tol / 4 and (repeated or gap <= 4 * best_error + gap_tol):
+                if n_refinements >= 8:
+                    status = "precision_limit"
+                    break
+                try:
+                    self.refine_intensity_precision(10)
+                except OverflowError:
+                    status = "precision_limit"
+                    break
+                n_refinements += 1
+                # Cost scale can change: discard all previous cuts and bounds.
+                evals_x.clear(); evals_f.clear(); cut_g.clear(); cut_b.clear()
+                best_f = best_upper = best_error = np.inf
+                lb = -np.inf
+                x = best_x.copy()
+                continue
+            if repeated:
                 status = "stalled"
                 break
             x = x_next
 
-        gap = best_f - lb
+        # A rebuild on the last iteration still needs a fresh returned value.
+        if not np.isfinite(best_f):
+            self.set_point(best_x)
+            best_f = float(self.total_cost())
+            certificate = self.graph.dual_cut()
+            best_upper, best_error = certificate["upper_bound"], certificate["rounding_error"]
+        self.set_point(best_x)
+        gap = best_upper - lb
         return OptimizeResult(
-            x=best_x,
-            fun=best_f,
-            lb=lb,
-            gap=gap,
-            nit=nit,
-            n_cut_repairs=n_repairs,
-            success=(status == "converged"),
+            x=best_x, fun=best_f, upper_bound=best_upper, lb=lb, gap=gap,
+            rounding_error=best_error, gap_tolerance=gap_tol,
+            bound_certified=certified, n_precision_refinements=n_refinements,
+            nit=nit, n_cut_repairs=n_repairs,
+            success=(certified and status == "converged" and 0 <= gap <= gap_tol),
             status=status,
-            message=(
-                f"cutting-plane: {status}, gap={gap:.3g}, "
-                f"{n_repairs} cut repair(s)"
-            ),
+            message=f"cutting-plane: {status}, gap={gap:.3g}, certified={certified}, {n_refinements} precision refinement(s)",
         )
 
     def no_subgraphs(self) -> int:
