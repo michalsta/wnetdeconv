@@ -14,7 +14,7 @@ _INDEPENDENT_TRASH_METHOD = "add_independent_asymmetric_trash"
 
 
 def _cut_model_lower_bound(lp, gradients, intercepts, caps, fixed_a=None,
-                           fixed_b=None, a_eq=None, b_eq=None):
+                           fixed_b=None, a_eq=None, b_eq=None, lower=None):
     """Feasible Lagrangian bound, even when the master LP has residuals.
 
     Normalize nonnegative cut weights to cancel the unbounded epigraph
@@ -39,7 +39,8 @@ def _cut_model_lower_bound(lp, gradients, intercepts, caps, fixed_a=None,
         coefficient += multiplier * np.asarray(a_eq, dtype=dtype)
         constant -= multiplier * dtype(b_eq)
     box = np.asarray(caps, dtype=dtype)
-    bound = constant + np.minimum(coefficient, 0) @ box
+    floor = np.zeros_like(box) if lower is None else np.asarray(lower, dtype=dtype)
+    bound = constant + np.minimum(coefficient, 0) @ box + np.maximum(coefficient, 0) @ floor
     cushion = 64 * np.finfo(float).eps * (1 + abs(constant) + np.abs(coefficient) @ box)
     return float(bound - cushion)
 
@@ -512,6 +513,23 @@ class DeconvSolver:
         """Per-component (0, cap) bounds matching the declared flow budget."""
         return [(0.0, c if np.isfinite(c) else None) for c in self._w_caps]
 
+    def _cutting_plane_box(self, bounds):
+        """Intersect requested bounds with the finite, nonnegative flow budget."""
+        caps = np.array([c if np.isfinite(c) else 1.0 for c in self._w_caps])
+        lower = np.zeros_like(caps)
+        if bounds is not None:
+            if len(bounds) != len(caps):
+                raise ValueError("Bounds must contain one pair per component")
+            for i, (lo, hi) in enumerate(bounds):
+                lo = 0.0 if lo is None else float(lo)
+                hi = caps[i] if hi is None else float(hi)
+                if np.isnan(lo) or np.isnan(hi):
+                    raise ValueError("Bounds must not contain NaN")
+                lower[i], caps[i] = max(0.0, lo), min(caps[i], hi)
+        if not np.all(np.isfinite(lower)) or np.any(lower > caps):
+            raise ValueError("Bounds have no feasible intersection with the flow budget")
+        return lower, caps
+
     def _warn_if_caps_binding(self, x) -> None:
         """Warn when an optimum sits against the budget bound — the true
         optimum may lie beyond the representable region."""
@@ -634,6 +652,32 @@ class DeconvSolver:
         bounds: Optional[np.array] = None,
         maxiter: Optional[int] = None,
         print_steps: bool = False,
+        *,
+        tol: Optional[float] = None,
+        polish: bool = False,
+    ) -> OptimizeResult:
+        """Minimize transport cost with cutting planes, without polishing.
+
+        ``maxiter`` limits oracle evaluations (default 200); ``tol`` is the
+        absolute certified objective-gap tolerance (default 1e-9). Optional
+        bounds intersect the nonnegative integer-flow budget box. The class's
+        mass constraints remain active. ``print_steps`` reports model progress.
+        Set ``polish=True`` to finish with descent, or call
+        :meth:`optimize_descent` explicitly for the previous optimizer.
+        Certificates require a NetworkSimplex backend; other backends retain
+        their uncertified cutting-plane search without replacing the backend.
+        """
+        return self.optimize_cutting_plane(
+            x0=x0, max_iter=200 if maxiter is None else maxiter,
+            tol=tol, polish=polish, bounds=bounds, print_steps=print_steps,
+        )
+
+    def optimize_descent(
+        self,
+        x0: Optional[np.ndarray] = None,
+        bounds: Optional[np.array] = None,
+        maxiter: Optional[int] = None,
+        print_steps: bool = False,
     ) -> OptimizeResult:
         """
         Minimize total transport cost over non-negative spectrum proportions.
@@ -691,7 +735,10 @@ class DeconvSolver:
         x0: Optional[np.ndarray] = None,
         max_iter: int = 200,
         tol: Optional[float] = None,
-        polish: bool = True,
+        polish: bool = False,
+        *,
+        bounds: Optional[np.array] = None,
+        print_steps: bool = False,
     ) -> OptimizeResult:
         """Minimize transport cost with Kelley cutting planes.
 
@@ -727,9 +774,10 @@ class DeconvSolver:
             b_eq=None,
             max_iter=max_iter,
             tol=tol,
+            bounds=bounds, print_steps=print_steps,
         )
         if polish:
-            result = self._polish(result)
+            result = self._polish(result, bounds=bounds)
         self._warn_if_caps_binding(result.x)
         return result
 
@@ -750,10 +798,14 @@ class DeconvSolver:
         self._ftol = 1.0 / (self.scale_factor * new_scale)
         self.point = None
 
-    def _polish(self, cp_result: OptimizeResult) -> OptimizeResult:
+    def _polish(self, cp_result: OptimizeResult, bounds=None) -> OptimizeResult:
         """Warm-start the class's descent optimizer from the cutting-plane
         answer; keep the cheaper of the two evaluated points."""
         import warnings
+
+        if bounds is not None:
+            lower, caps = self._cutting_plane_box(bounds)
+            bounds = list(zip(lower, caps))
 
         with warnings.catch_warnings():
             # The caps-binding warning is re-issued by the caller on the
@@ -764,8 +816,8 @@ class DeconvSolver:
             # spectrum).  The keep-the-cheaper comparison below preserves
             # the monotone guarantee regardless of where the cap lands.
             warnings.simplefilter("ignore", RuntimeWarning)
-            descent = self.optimize(
-                x0=np.asarray(cp_result.x, dtype=float), maxiter=100
+            descent = self.optimize_descent(
+                x0=np.asarray(cp_result.x, dtype=float), maxiter=100, bounds=bounds
             )
         self.set_point(descent.x)
         f_descent = float(self.total_cost())
@@ -794,7 +846,7 @@ class DeconvSolver:
         return cp_result
 
     def _kelley(self, x0, a_eq, b_eq, max_iter, tol,
-                a_ub=None, b_ub=None) -> OptimizeResult:
+                a_ub=None, b_ub=None, bounds=None, print_steps=False) -> OptimizeResult:
         """Shared cutting-plane engine (see :meth:`optimize_cutting_plane`).
 
         ``a_eq`` / ``b_eq`` optionally impose a linear equality (used by
@@ -809,10 +861,8 @@ class DeconvSolver:
         n = len(self.theoretical_spectra)
         # Finite LP box from the overflow-budget caps (a component with no
         # intensity is inert; bound it by 1 to keep the LP bounded).
-        caps = np.array([
-            c if np.isfinite(c) else 1.0 for c in self._w_caps
-        ])
-        bounds = [(0.0, float(c)) for c in caps] + [(None, None)]
+        lower, caps = self._cutting_plane_box(bounds)
+        bounds = list(zip(lower, caps)) + [(None, None)]
         c_lp = np.zeros(n + 1)
         c_lp[-1] = 1.0
         lp_a_eq = None
@@ -841,7 +891,7 @@ class DeconvSolver:
         best_error = np.inf
         best_x = np.asarray(x0, dtype=float)
         lb = -np.inf
-        x = np.clip(np.asarray(x0, dtype=float), 0.0, caps)
+        x = np.clip(np.asarray(x0, dtype=float), lower, caps)
         status = "max_iter"
         nit = 0
         gap_tol = tol if tol is not None else 1e-9
@@ -849,6 +899,21 @@ class DeconvSolver:
             raise ValueError("Gap tolerance must be finite and positive")
         if max_iter < 1:
             raise ValueError("max_iter must be positive")
+
+        # A clipped user start can violate the mass constraint. Upper bounds
+        # must come from points feasible for the same master problem.
+        violates_eq = lp_a_eq is not None and not np.allclose(
+            lp_a_eq[:, :n] @ x, lp_b_eq, rtol=0, atol=1e-10)
+        violates_ub = fixed_a_ub is not None and np.any(
+            fixed_a_ub[:, :n] @ x > fixed_b_ub + 1e-10)
+        if violates_eq or violates_ub:
+            feasible = linprog(np.zeros(n + 1), A_ub=fixed_a_ub, b_ub=fixed_b_ub,
+                               A_eq=lp_a_eq, b_eq=lp_b_eq, bounds=bounds, method="highs",
+                               options={"primal_feasibility_tolerance": 1e-10,
+                                        "dual_feasibility_tolerance": 1e-10})
+            if not feasible.success:
+                raise ValueError(f"Bounds and mass constraints are infeasible: {feasible.message}")
+            x = np.clip(feasible.x[:n], lower, caps)
 
         for nit in range(1, max_iter + 1):
             self.set_point(x)
@@ -898,17 +963,20 @@ class DeconvSolver:
             # Modified/repaired models invalidate historical maxima. For the
             # certified path cuts only accumulate between precision rebuilds.
             candidate_lb = _cut_model_lower_bound(
-                lp, cut_g, cut_b, caps, fixed_a_ub, fixed_b_ub, a_eq, b_eq
+                lp, cut_g, cut_b, caps, fixed_a_ub, fixed_b_ub, a_eq, b_eq, lower
             )
             lb = max(lb, candidate_lb) if certified else candidate_lb
             gap = best_upper - lb
+            if print_steps:
+                print(f"step {nit:3d} cost={f:.8g} upper={best_upper:.8g} "
+                      f"lb={lb:.8g} gap={gap:.3g} refinements={n_refinements}")
             if gap < -gap_tol:
                 status = "invalid_bound"
                 break
             if 0 <= gap <= gap_tol:
                 status = "converged"
                 break
-            x_next = np.clip(lp.x[:n], 0.0, caps)
+            x_next = np.clip(lp.x[:n], lower, caps)
             repeated = any(np.allclose(x_next, xe, rtol=1e-12, atol=1e-14) for xe in evals_x)
             if certified and best_error > gap_tol / 4 and (repeated or gap <= 4 * best_error + gap_tol):
                 if n_refinements >= 8:
@@ -944,6 +1012,7 @@ class DeconvSolver:
             rounding_error=best_error, gap_tolerance=gap_tol,
             bound_certified=certified, n_precision_refinements=n_refinements,
             nit=nit, n_cut_repairs=n_repairs,
+            polish_improved=False,
             success=(certified and status == "converged" and 0 <= gap <= gap_tol),
             status=status,
             message=f"cutting-plane: {status}, gap={gap:.3g}, certified={certified}, {n_refinements} precision refinement(s)",
@@ -1033,7 +1102,8 @@ class ConstrainedSolver(DeconvSolver):
     This couples the proportions so that components with extra unmatched peaks
     (diluted libraries) are naturally down-weighted without tuning
     theo_trash_cost.  The constraint is enforced during the call to
-    optimize(), which uses SLSQP instead of L-BFGS-B.
+    optimize(), which carries it in the cutting-plane master LP.
+    optimize_descent() retains the previous SLSQP implementation.
 
     All DeconvSolver methods (set_point, total_cost, gradient, flows, …)
     are inherited unchanged and work identically.
@@ -1050,7 +1120,7 @@ class ConstrainedSolver(DeconvSolver):
             [t.sum_intensities for t in self.theoretical_spectra]
         )
 
-    def optimize(
+    def optimize_descent(
         self,
         x0: Optional[np.ndarray] = None,
         bounds: Optional[np.array] = None,
@@ -1118,14 +1188,17 @@ class ConstrainedSolver(DeconvSolver):
         x0: Optional[np.ndarray] = None,
         max_iter: int = 200,
         tol: Optional[float] = None,
-        polish: bool = True,
+        polish: bool = False,
+        *,
+        bounds: Optional[np.array] = None,
+        print_steps: bool = False,
     ) -> OptimizeResult:
         """Cutting-plane minimization under the total-mass equality.
 
         Same engine as :meth:`DeconvSolver.optimize_cutting_plane`; the
         constraint ``sum_s(w_s * I_s) = I_emp`` is carried natively by the
         per-iteration LP instead of SLSQP's iterative enforcement.  With
-        ``polish=True`` (default) the answer is refined by a warm-started
+        ``polish=True`` the answer is refined by a warm-started
         SLSQP run and the cheaper evaluated point is returned.  See the base
         method for semantics of the returned result.
         """
@@ -1139,9 +1212,10 @@ class ConstrainedSolver(DeconvSolver):
             b_eq=self._emp_total,
             max_iter=max_iter,
             tol=tol,
+            bounds=bounds, print_steps=print_steps,
         )
         if polish:
-            result = self._polish(result)
+            result = self._polish(result, bounds=bounds)
         self._warn_if_caps_binding(result.x)
         return result
 
@@ -1313,14 +1387,22 @@ class _MassersteinBase(DeconvSolver):
         total = x0.sum()
         return x0 / total if total > 1.0 else x0
 
-    def optimize(
+    def optimize(self, x0=None, maxiter=None, *, bounds=None, tol=None,
+                 polish=False, print_steps=False) -> OptimizeResult:
+        """Default cutting planes, preserving positional ``x0, maxiter``."""
+        return super().optimize(x0=x0, bounds=bounds, maxiter=maxiter,
+                                tol=tol, polish=polish, print_steps=print_steps)
+
+    def optimize_descent(
         self,
         x0: Optional[np.ndarray] = None,
         maxiter: Optional[int] = None,
+        *,
+        bounds: Optional[np.array] = None,
     ) -> OptimizeResult:
         """Descent under ``w >= 0`` and ``sum(w) <= 1``.
 
-        Overrides :meth:`DeconvSolver.optimize`, whose bounds-only L-BFGS-B
+        Overrides :meth:`DeconvSolver.optimize_descent`, whose bounds-only L-BFGS-B
         would walk straight off this class's feasible set.  Used on its own
         and as the polish stage of :meth:`optimize_cutting_plane`; SLSQP is
         a poor primary optimizer here (see that method) but a serviceable
@@ -1346,7 +1428,7 @@ class _MassersteinBase(DeconvSolver):
             x0=x0,
             jac=True,
             method="SLSQP",
-            bounds=self._budget_bounds(),
+            bounds=self._budget_bounds() if bounds is None else bounds,
             constraints=constraints,
             options={
                 "maxiter": 2000 if maxiter is None else maxiter,
@@ -1361,7 +1443,10 @@ class _MassersteinBase(DeconvSolver):
         x0: Optional[np.ndarray] = None,
         max_iter: int = 200,
         tol: Optional[float] = None,
-        polish: bool = True,
+        polish: bool = False,
+        *,
+        bounds: Optional[np.array] = None,
+        print_steps: bool = False,
     ) -> OptimizeResult:
         """Kelley cutting planes over ``w >= 0``, ``sum(w) <= 1``.
 
@@ -1390,7 +1475,7 @@ class _MassersteinBase(DeconvSolver):
 
         Parameters and return value match
         :meth:`DeconvSolver.optimize_cutting_plane`; ``polish`` warm-starts
-        :meth:`optimize` (the constrained descent) and keeps the cheaper of
+        :meth:`optimize_descent` (the constrained descent) and keeps the cheaper of
         the two evaluated points.
         """
         n = len(self.theoretical_spectra)
@@ -1402,9 +1487,10 @@ class _MassersteinBase(DeconvSolver):
             tol=tol,
             a_ub=np.ones(n),
             b_ub=1.0,
+            bounds=bounds, print_steps=print_steps,
         )
         if polish:
-            result = self._polish(result)
+            result = self._polish(result, bounds=bounds)
         self._warn_if_caps_binding(result.x)
         return result
 

@@ -18,7 +18,7 @@ def _magnetstein_pair():
 
 def test_cp_not_worse_than_slsqp():
     s = _magnetstein_pair()
-    f_slsqp = s.optimize().fun
+    f_slsqp = s.optimize_descent().fun
     r = s.optimize_cutting_plane()
     assert r.fun <= f_slsqp + 1e-9
     assert r.nit <= 200
@@ -41,7 +41,7 @@ def test_cp_unconstrained_matches_lbfgsb():
     s = DeconvSolver(
         emp, theos, DistanceMetric.L1, max_distance=0.6, trash_cost=0.5
     )
-    f_ref = s.optimize().fun
+    f_ref = s.optimize_descent().fun
     r = s.optimize_cutting_plane()
     assert r.fun <= f_ref + 1e-9
     caps = np.array([c if np.isfinite(c) else 1.0 for c in s._w_caps])

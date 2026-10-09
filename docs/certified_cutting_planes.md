@@ -1,6 +1,7 @@
 # Certified cutting planes
 
-Select a NetworkSimplex configuration to use the dual-cut oracle:
+`optimize()` now uses cutting planes with `polish=False`. Select a
+NetworkSimplex configuration to use the certified dual-cut oracle:
 
 ```python
 from wnet.distances import DistanceMetric
@@ -16,7 +17,7 @@ solver = DeconvSolver(
     theoretical_trash_cost=0.03,
     solver=NetworkSimplex(),
 )
-result = solver.optimize_cutting_plane(tol=1e-8, polish=False)
+result = solver.optimize(tol=1e-8)
 print(result.x, result.success, result.gap)
 ```
 
@@ -60,3 +61,10 @@ by the tests. `wnet_smietnik/nmr_deconv/benchmark_dual_oracles.py` benchmarks
 fresh solve-and-oracle sequences on the actual aromatic data, standard and
 LinkCut simplex, and default/100x initial supply precision. Each returned bound
 is checked against a known feasible mixture, and each success against its gap.
+
+`optimize_descent()` preserves the previous descent API. `optimize()` accepts
+`x0`, custom `bounds`, `maxiter` (oracle budget), `tol`, `print_steps`, and
+optional `polish=True`. Custom bounds and mass constraints also apply during
+polishing. `optimize_cutting_plane()` retains its `max_iter` spelling and now
+also defaults to no polishing. Automatic 1D transport backend selection and
+Masserstein `deconvolve()` compatibility behavior remain unchanged.

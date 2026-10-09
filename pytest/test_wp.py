@@ -36,8 +36,8 @@ def test_p2_chain_matches_dense(independent):
         np.testing.assert_allclose(
             chain.gradient(), dense.gradient(), rtol=1e-9, atol=1e-9
         )
-    rc = chain.optimize()
-    rd = dense.optimize()
+    rc = chain.optimize_descent()
+    rd = dense.optimize_descent()
     assert rc.fun == pytest.approx(rd.fun, rel=1e-6)
     np.testing.assert_allclose(rc.x, rd.x, rtol=1e-4, atol=1e-6)
 

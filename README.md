@@ -70,7 +70,7 @@ non-default value raises a `DeprecationWarning`.
 ### `DeconvSolver` — unconstrained baseline
 
 Solves the network at a given point and exposes `total_cost()` and
-`gradient()`.  Optimisation (via `optimize()`, L-BFGS-B) minimises cost with
+`gradient()`.  Optimisation (via `optimize()`, cutting planes) minimises cost with
 only non-negativity bounds.
 
 ```python
@@ -110,7 +110,7 @@ would add).
 ### `ConstrainedSolver` — total-mass equality
 
 Adds the constraint `Σ wₛ · Iₛ = I_emp` so that the mixture exactly accounts
-for all empirical intensity.  Uses SLSQP.  Drop-in replacement for
+for all empirical intensity. Carries mass balance in the cutting-plane master LP.  Drop-in replacement for
 `DeconvSolver`; call `optimize()` the same way.
 
 ```python
@@ -126,23 +126,31 @@ solver = ConstrainedSolver(
 result = solver.optimize()
 ```
 
-### `optimize_cutting_plane()` — kink-safe alternative optimizer
+### Default optimization and explicit descent
 
-The objective is convex piecewise linear in the proportions, and descent
-methods (L-BFGS-B, SLSQP) can stall on the kinks between linear pieces when
-several components' spectra overlap heavily.  `optimize_cutting_plane()`
-(on `DeconvSolver` and `ConstrainedSolver`) runs Kelley's cutting-plane
-method instead: each evaluation contributes a supporting plane and the next
-iterate minimizes the accumulated plane model over the feasible polytope (a
-small LP per iteration).  It returns the best evaluated point together with
-a model lower bound and gap; the mass-balance constraint is carried natively
-by the LP.  Typically converges in 10-40 evaluations and never returns a
-point with higher cost than it evaluated.  By default (`polish=True`) the
-answer is then refined by the class's descent optimizer warm-started from
-the cutting-plane point, and the cheaper of the two is returned — the plane
-model navigates the kinks, the descent finishes the final linear piece, and
-the comparison makes the combination monotone (never worse than either
-stage alone).
+`solver.optimize()` runs cutting planes without polishing. The existing
+`x0`, `bounds`, and `maxiter` arguments remain available; `maxiter` now limits
+transport evaluations (default 200). `tol` is a positive absolute objective-gap
+tolerance (default 1e-9). Custom bounds intersect the safe flow-budget box, and
+the class's mass constraints remain active.
+
+NetworkSimplex variants, including LinkCut, provide certified cuts and stopping
+bounds, with adaptive supply precision. Certificates cover continuous supplies
+with fixed quantized cost coefficients. Other selected transport backends are
+retained and report an uncertified cutting-plane result; their success flag is
+false. Existing automatic 1D SlopeDP/ConvexSweep selection is unchanged.
+
+```python
+result = solver.optimize(tol=1e-8)                 # cutting planes, no polish
+result = solver.optimize(polish=True)             # optional descent finish
+result = solver.optimize_descent(maxiter=2000)    # previous descent optimizer
+```
+
+`optimize_cutting_plane()` remains available, with the same `polish=False`
+default and the parameter spelling `max_iter`. Polishing explicitly calls
+`optimize_descent()`. L-BFGS-B and SLSQP remain available through that method.
+The Masserstein compatibility entry point `deconvolve()` retains its existing
+two-stage descent reproduction; use `optimize()` for the new default.
 
 ## Key parameters
 
@@ -178,7 +186,7 @@ emp = Spectrum.FromFeatureXML("sample.featureXML")   # requires pyopenms
 wnetdeconv
 ├── Spectrum / Spectrum_1D   — data containers (extend wnet.Distribution)
 ├── DeconvSolver             — core: builds WassersteinNetwork, exposes cost + gradient
-├── ConstrainedSolver        — adds total-mass equality, uses SLSQP
+├── ConstrainedSolver        — adds total-mass equality to the master LP
 │   └── MagnetsteinSolver    — magnetstein-style: all spectra normalised to sum 1;
 │                              with MTD_th, defaults to independent two-sided trash
 │                              (dualdeconv3/4 semantics; independent_trash=False
