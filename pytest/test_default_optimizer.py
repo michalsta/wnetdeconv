@@ -129,7 +129,7 @@ def test_masserstein_deconvolve_defaults_to_cutting_planes(name, mass, monkeypat
 @pytest.mark.parametrize("cls", [DeconvSolver, ConstrainedSolver, MagnetsteinSolver])
 @pytest.mark.parametrize("p", [1.0, 2.0])
 def test_1d_defaults_provide_certified_cutting_planes(cls, p):
-    from wnet.wnet_cpp import NetworkSimplex
+    from wnet.wnet_cpp import NetworkSimplex, SlopeDP
     from wnetdeconv import Spectrum_1D
 
     options = dict(empirical_spectrum=Spectrum_1D([0, 10], [0.75, 0.25]),
@@ -140,8 +140,43 @@ def test_1d_defaults_provide_certified_cutting_planes(cls, p):
     else:
         options.update(max_distance=0.5, trash_cost=0.5)
     solver = cls(**options)
-    assert isinstance(solver.graph._solver, NetworkSimplex)
+    assert isinstance(solver.graph._solver, SlopeDP if p == 1 else NetworkSimplex)
     result = solver.optimize()
     assert result.success and result.bound_certified
     assert 0 <= result.gap <= 1e-9
     np.testing.assert_allclose(result.x, [0.75, 0.25], atol=1e-7)
+
+
+@pytest.mark.parametrize('cls', [DeconvSolver, ConstrainedSolver, MagnetsteinSolver])
+@pytest.mark.parametrize('dual_mode', ['lazy', 'cluster'])
+def test_1d_dp_recovery_modes_are_integrated(cls, dual_mode):
+    from wnet.wnet_cpp import SlopeDP
+    from wnetdeconv import Spectrum_1D
+    truth = np.array([0.123456, 0.876544])
+    options = dict(empirical_spectrum=Spectrum_1D([0, 10], truth),
+                   theoretical_spectra=[Spectrum_1D([0], [1]), Spectrum_1D([10], [1])],
+                   distance=DistanceMetric.L1, solver=SlopeDP(dual_mode))
+    if cls is MagnetsteinSolver:
+        options.update(MTD=0.5, MTD_th=0.5)
+    else:
+        options.update(max_distance=0.5, trash_cost=0.5, scale_factor=13,
+                       allow_intensity_loss=True)
+    solver = cls(**options)
+    result = solver.optimize(tol=1e-8)
+    assert result.success and result.bound_certified, result
+    assert solver.graph._solver.dual_mode == dual_mode
+    np.testing.assert_allclose(result.x, truth, atol=1e-7)
+    if cls is not MagnetsteinSolver:
+        assert result.n_precision_refinements > 0
+
+
+def test_explicit_simplex_and_dense_1d_retain_simplex():
+    from wnet.wnet_cpp import NetworkSimplex
+    from wnetdeconv import Spectrum_1D
+    options = dict(empirical_spectrum=Spectrum_1D([0], [1]),
+                   theoretical_spectra=[Spectrum_1D([0], [1])],
+                   max_distance=1, trash_cost=1, distance=DistanceMetric.L1)
+    for extra in ({'method': 'network_simplex'}, {'force_dense_1d': True}):
+        solver = DeconvSolver(**options, **extra)
+        assert isinstance(solver.graph._solver, NetworkSimplex)
+        assert solver.optimize().bound_certified

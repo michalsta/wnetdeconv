@@ -681,6 +681,9 @@ DeconvSolver            builds the WassersteinNetwork; set_point / total_cost /
 - **Gradient variants.** `gradient()` is the exact marginal (per-subgraph Dijkstra).
   `gradient_fast_approx()` is a dual-potential difference — cheaper, basis-dependent,
   a lower bound, exact only on the optimal flow support. Not a drop-in replacement.
+- **1D p=1 defaults to SlopeDP with lazy certified dual recovery.** Set
+  `solver=SlopeDP(dual_mode="cluster")` to retain cluster state; other default
+  fits use NetworkSimplex. ConvexSweep still has no certified cuts.
 - **`max_distance` is structural, not just a cost cap.** In 1D it decides chain
   (O(m+n)) vs dense (O(m·n)) network construction; `force_dense_1d=True` forces dense.
 - Quantisation silently drops peaks below one integer unit. Construction raises

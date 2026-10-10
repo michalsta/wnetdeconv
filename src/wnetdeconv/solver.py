@@ -165,9 +165,9 @@ class DeconvSolver:
     method : str, optional
         Min-cost flow algorithm: ``"network_simplex"`` (default), ``"cycle_canceling"``, ``"cost_scaling"``, or ``"capacity_scaling"``.
         Ignored when ``solver`` is provided.
-    solver : NetworkSimplex | CostScaling | CycleCanceling | CapacityScaling, optional
+    solver : NetworkSimplex | SlopeDP | ConvexSweep | CostScaling | CycleCanceling | CapacityScaling, optional
         Solver configuration object.  Takes precedence over ``method``.
-        Defaults to ``NetworkSimplex()`` (warm restarts, BLOCK_SEARCH pivot).
+        Defaults to ``SlopeDP()`` for 1D p=1 chains and ``NetworkSimplex()`` otherwise.
     force_dense_1d : bool, optional
         In 1D, force the O(m*n) dense factory instead of the O(m+n) chain
         factory (default False = chain in 1D).  Also switches
@@ -356,8 +356,8 @@ class DeconvSolver:
         self.empirical_spectrum = empirical_spectrum
         self.theoretical_spectra = list(theoretical_spectra)
 
-        # Certified cutting planes require NetworkSimplex dual bounds.
-        # Keep analytic 1-D backends available through explicit solver configs.
+        # SlopeDP supplies certified dual cuts on 1D p=1 chains.
+        # Keep explicit backend choices and dense graph semantics intact.
         # Shared-grid NetworkSimplex warm repair can be slow; retain the cold
         # restart policy unless the caller explicitly configured repair.
         from wnet.wnet_cpp import (
@@ -383,7 +383,8 @@ class DeconvSolver:
             # together, so drop the ignored one here.
             method = None
         if solver is None:
-            solver = _NSConfig()
+            solver = (_SlopeDP() if empirical_spectrum.dimension == 1
+                      and not force_dense_1d and p == 1 else _NSConfig())
         if (
             empirical_spectrum.dimension == 1
             and not force_dense_1d
@@ -647,7 +648,7 @@ class DeconvSolver:
         mass constraints remain active. ``print_steps`` reports model progress.
         Set ``polish=True`` to finish with descent, or call
         :meth:`optimize_descent` explicitly for the previous optimizer.
-        Certificates require a NetworkSimplex backend; other backends retain
+        Certificates require NetworkSimplex or SlopeDP; other backends retain
         their uncertified cutting-plane search without replacing the backend.
         """
         return self.optimize_cutting_plane(
@@ -725,7 +726,7 @@ class DeconvSolver:
     ) -> OptimizeResult:
         """Minimize transport cost with Kelley cutting planes.
 
-        NetworkSimplex variants construct common feasible dual cuts for the
+        NetworkSimplex and SlopeDP construct common feasible dual cuts for the
         continuous-supply objective with fixed quantized costs. Integer solves
         provide upper bounds including explicit supply-rounding uncertainty.
         Precision is refined adaptively; rebuilding clears all cuts and bounds
@@ -861,8 +862,8 @@ class DeconvSolver:
             fixed_a_ub = np.column_stack([rows, np.zeros(len(rows))])
             fixed_b_ub = np.atleast_1d(np.asarray(b_ub, dtype=float))
 
-        from wnet.wnet_cpp import NetworkSimplex
-        certified = isinstance(self.graph._solver, NetworkSimplex)
+        from wnet.wnet_cpp import NetworkSimplex, SlopeDP
+        certified = isinstance(self.graph._solver, (NetworkSimplex, SlopeDP))
         evals_x: list[np.ndarray] = []
         evals_f: list[float] = []
         cut_g: list[np.ndarray] = []
@@ -1241,7 +1242,7 @@ class MagnetsteinSolver(ConstrainedSolver):
         is ignored — the independent model needs both per-side penalties).
     method : str, optional
         Min-cost flow algorithm (default: ``"network_simplex"``). Ignored when ``solver`` is provided.
-    solver : NetworkSimplex | CostScaling | CycleCanceling | CapacityScaling, optional
+    solver : NetworkSimplex | SlopeDP | ConvexSweep | CostScaling | CycleCanceling | CapacityScaling, optional
         Solver configuration object.  Takes precedence over ``method``.
     independent_trash : bool, optional
         Trash model when ``MTD_th`` is given (default True = independent,
@@ -1538,7 +1539,7 @@ class MassersteinSolver2(_MassersteinBase):
         the hemoglobin benchmark; L1 error 0.113 vs 0.016 at 3×).
     method : str, optional
         Min-cost flow algorithm.  Ignored when ``solver`` is provided.
-    solver : NetworkSimplex | CostScaling | CycleCanceling | CapacityScaling, optional
+    solver : NetworkSimplex | SlopeDP | ConvexSweep | CostScaling | CycleCanceling | CapacityScaling, optional
         Solver configuration object.  Takes precedence over ``method``.
     """
 
@@ -1599,7 +1600,7 @@ class MassersteinSolver4(_MassersteinBase):
         Theoretical-side denoising penalty (``penalty_th`` in dualdeconv4).
     method : str, optional
         Min-cost flow algorithm.  Ignored when ``solver`` is provided.
-    solver : NetworkSimplex | CostScaling | CycleCanceling | CapacityScaling, optional
+    solver : NetworkSimplex | SlopeDP | ConvexSweep | CostScaling | CycleCanceling | CapacityScaling, optional
         Solver configuration object.  Takes precedence over ``method``.
     """
 
