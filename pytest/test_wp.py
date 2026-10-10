@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from wnet.distances import DistanceMetric
+from wnet.wnet_cpp import ConvexSweep
 from wnetdeconv import DeconvSolver, MagnetsteinSolver, Spectrum_1D
 
 
@@ -19,7 +20,7 @@ def _pair(**overrides):
         p=2.0,
     )
     kw.update(overrides)
-    chain = DeconvSolver(emp, theos, **kw)
+    chain = DeconvSolver(emp, theos, solver=ConvexSweep(), **kw)
     dense = DeconvSolver(emp, theos, force_dense_1d=True, **kw)
     return chain, dense
 

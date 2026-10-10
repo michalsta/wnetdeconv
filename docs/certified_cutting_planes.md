@@ -66,5 +66,7 @@ is checked against a known feasible mixture, and each success against its gap.
 `x0`, custom `bounds`, `maxiter` (oracle budget), `tol`, `print_steps`, and
 optional `polish=True`. Custom bounds and mass constraints also apply during
 polishing. `optimize_cutting_plane()` retains its `max_iter` spelling and now
-also defaults to no polishing. Automatic 1D transport backend selection and
-Masserstein `deconvolve()` compatibility behavior remain unchanged.
+also defaults to no polishing. Masserstein `deconvolve()` uses the same default
+cutting-plane optimizer and preserves its dictionary return format. Analytic
+1D transport backends remain explicitly selectable; NetworkSimplex is now the
+default in all dimensions so default fits can certify their stopping bounds.

@@ -143,9 +143,9 @@ class DeconvSolver:
           forwarded to wnet as ``split_distance``.
         * **Dense mode** (dims > 1, ``force_dense_1d=True``, a
           chain-incapable solver such as CostScaling/CapacityScaling, or
-          ``independent_trash=True`` with any solver other than the SlopeDP
-          default): a strict *per-pair* matching threshold — mass is never
-          transported between peaks farther apart than ``max_distance``.
+          ``independent_trash=True`` with a non-analytic solver, or
+          ``p != 1`` without ConvexSweep): a strict *per-pair* matching
+          threshold — mass is never transported between peaks farther apart than ``max_distance``.
     trash_cost : int or float, optional
         Cost for assigning unmatched peaks to trash (symmetric). Used as fallback for
         experimental_trash_cost / theoretical_trash_cost when only one is set.
@@ -356,17 +356,10 @@ class DeconvSolver:
         self.empirical_spectrum = empirical_spectrum
         self.theoretical_spectra = list(theoretical_spectra)
 
-        # 1-D data goes through wnet's chain factory, where the exact
-        # chain-native SlopeDP solver beats NetworkSimplex on every measured
-        # workload (bit-exact costs): shared-grid profile NMR by ~200x+
-        # (pinene 70k: 21.7 min -> 6.8 s end-to-end), and centroided MS too
-        # (hemoglobin 2.3x, PBTTT 1.5x vs warm-repair NS).  Default to it
-        # whenever the caller did not pick a solver.
-        # If the caller insists on NetworkSimplex on shared-grid profile
-        # data, its warm-restart dual repair degrades into long bound-flip
-        # walks (2-5x slower than plain cold restarts), so disable repair
-        # (warm_violation_limit=0) unless explicitly configured; centroided
-        # data keeps repair, which wins there (PBTTT ~4x).
+        # Certified cutting planes require NetworkSimplex dual bounds.
+        # Keep analytic 1-D backends available through explicit solver configs.
+        # Shared-grid NetworkSimplex warm repair can be slow; retain the cold
+        # restart policy unless the caller explicitly configured repair.
         from wnet.wnet_cpp import (
             NetworkSimplex as _NSConfig,
             SlopeDP as _SlopeDP,
@@ -389,31 +382,21 @@ class DeconvSolver:
             # provided.  wnet >= 1.3.0's wrapper raises on solver+method
             # together, so drop the ignored one here.
             method = None
-        # Independent trash rides the chain only under SlopeDP (wnet >= 1.3.0
-        # prices it analytically there; the per-match cost shift cannot ride
-        # chain hop arcs, so any other solver forces the dense factory).  The
-        # chain-native SlopeDP default therefore applies to it as well.
+        if solver is None:
+            solver = _NSConfig()
         if (
             empirical_spectrum.dimension == 1
             and not force_dense_1d
+            and isinstance(solver, _NSConfig)
+            and solver.warm_violation_limit == -2
+            and self._all_spectra_share_grid()
         ):
-            if solver is None and method is None:
-                # SlopeDP is the chain-native exact solver for p == 1;
-                # ConvexSweep (wnet >= 1.3.0) is its analogue for p > 1.
-                solver = _SlopeDP() if p == 1.0 else _ConvexSweep()
-            elif (
-                isinstance(solver, _NSConfig)
-                and solver.warm_violation_limit == -2
-                and self._all_spectra_share_grid()
-            ):
-                # Apply the shared-grid policy to a copy — mutating the
-                # caller's config object would leak the override into any
-                # other solver built from it.
-                cfg = _NSConfig()
-                cfg.pivot = solver.pivot
-                cfg.warm = solver.warm
-                cfg.warm_violation_limit = 0
-                solver = cfg
+            # Copy the config so this policy does not mutate caller state.
+            cfg = _NSConfig()
+            cfg.pivot = solver.pivot
+            cfg.warm = solver.warm
+            cfg.warm_violation_limit = 0
+            solver = cfg
 
         # wnet >= 1.3.0 names the two distance-cap semantics separately:
         # ``max_distance`` is a guaranteed per-pair matching threshold (dense
@@ -1357,26 +1340,13 @@ class _MassersteinBase(DeconvSolver):
     use — instantiate :class:`MassersteinSolver2` (dualdeconv2-equivalent) or
     :class:`MassersteinSolver4` (dualdeconv4-equivalent).
 
-    Two-pass solve:
-      1.  L-BFGS-B with bounds ``w >= 0`` only (no sum constraint).  ``f(w)``
-          is convex in ``w``, so the unconstrained minimum is the constrained
-          minimum *iff* it satisfies ``sum(w) <= 1``.  When that holds (the
-          common case) the cheap bounds-only path is the answer.
-      2.  If the L-BFGS-B output violates ``sum(w) > 1``, the constraint is
-          binding; re-solve with SLSQP on the explicit ``sum(w) <= 1`` face.
-
-    A naive "check the gradient sign at the face centre" dispatch was tried
-    first and fails: ``f(w)`` is piecewise linear, so the gradient near the
-    constraint can sit at a kink where the right-side subgradient has the
-    wrong sign for the KKT test.  The run-then-check above sidesteps that.
-    Both inner solves clamp their tolerance to a safe ceiling so the cheap
-    relative-change-stopping rules don't terminate on flat-plateau regions
-    before the optimum is reached (the auto ``self._ftol`` derived from the
-    scale factors is calibrated for cost-output accuracy, not optimiser
-    stopping).
+    Default optimization uses cutting planes with ``w >= 0`` and
+    ``sum(w) <= 1`` enforced in every master LP. ``deconvolve()`` preserves
+    the dictionary return format used by the Masserstein compatibility API.
+    Explicit ``optimize_descent()`` uses SLSQP under the same constraints.
     """
 
-    _FTOL_CEILING = 1e-10  # see deconvolve() for why
+    _FTOL_CEILING = 1e-10  # cap relative-change tolerance for explicit descent
 
     def _face_start(self, x0):
         """A feasible starting point for the ``sum(w) <= 1`` polytope."""
@@ -1450,28 +1420,11 @@ class _MassersteinBase(DeconvSolver):
     ) -> OptimizeResult:
         """Kelley cutting planes over ``w >= 0``, ``sum(w) <= 1``.
 
-        :meth:`deconvolve` reproduces dualdeconv2/4 by running L-BFGS-B and,
-        when the total-mass constraint turns out to bind, re-solving with
-        SLSQP on the face.  Both are descent methods that trust a pointwise
-        gradient, and ``f(w)`` is convex *piecewise linear* — the inner
-        min-cost flow's value is a maximum of linear functions of the
-        supplies — so on the face they can halt at a kink and report
-        success there.  Measured on an intact-antibody spectrum with 135
-        components: the shipped path stopped at 0.128357 and declared
-        convergence, while the same SLSQP started from a better point
-        reached 0.121406 in two iterations, a 5.4 % optimality gap that
-        depended only on where it began.
-
-        Here the face is carried natively inside the per-iteration LP, the
-        same way :class:`ConstrainedSolver` carries its total-mass equality,
-        and each evaluation contributes a supporting plane instead of a
-        direction to step along.  Kinks are modelled rather than stumbled
-        into, and the LP's value is a lower bound, so the gap is reported
-        rather than assumed.
-
-        Unlike :meth:`deconvolve` this needs no two-pass dispatch: the
-        constraint is present throughout, and a solution interior to the
-        face simply leaves it slack.
+        The mass constraint is carried natively inside each master LP,
+        and each evaluation contributes a supporting plane. This avoids
+        the nonsmooth line-search stalls of explicit descent. Both
+        :meth:`optimize` and :meth:`deconvolve` use this method by default.
+        An interior solution simply leaves the mass constraint slack.
 
         Parameters and return value match
         :meth:`DeconvSolver.optimize_cutting_plane`; ``polish`` warm-starts
@@ -1495,80 +1448,19 @@ class _MassersteinBase(DeconvSolver):
         return result
 
     def deconvolve(self, x0: Optional[np.ndarray] = None) -> dict:
+        """Fit with cutting planes and return Masserstein-compatible fields.
+
+        ``x0`` defaults to uniform ``1/(2k)``. Nonnegative weights and
+        ``sum(w) <= 1`` are enforced throughout optimization. The returned
+        ``on_simplex_face`` indicates whether the fitted weights sum to one
+        within 1e-9; it does not describe an optimizer dispatch.
         """
-        Find optimal component proportions, matching dualdeconv2/4's output.
-
-        Parameters
-        ----------
-        x0 : np.ndarray, optional
-            Initial proportions.  Defaults to uniform ``1/(2k)`` (interior of
-            feasible set, away from the ``sum(w)=1`` boundary).
-
-        Returns
-        -------
-        dict
-            probs   : list[float]  – weight of each theoretical spectrum
-            fun     : float        – optimal transport cost
-            success : bool
-            on_simplex_face : bool – True iff the ``sum(w) = 1`` constraint
-                                     was active and SLSQP was used; False
-                                     iff bounds-only L-BFGS-B sufficed.
-        """
-        n = len(self.theoretical_spectra)
-        if x0 is None:
-            x0 = np.ones(n) / (2 * n)
-
-        def cost_and_grad(w):
-            self.set_point(w)
-            return self.total_cost(), self.gradient()
-
-        # Pass 1: bounds-only L-BFGS-B with the user's auto ``ftol`` (no
-        # extra clamp).  Its only job is to decide which side of the
-        # ``sum(w) = 1`` face the optimum lies on; the location of the
-        # optimum itself is refined in pass 2 when needed, so the loose
-        # default is fine here and saves iterations.
-        result = minimize(
-            cost_and_grad,
-            x0=x0,
-            jac=True,
-            method="L-BFGS-B",
-            bounds=self._budget_bounds(),
-            options={"maxiter": 2000, "ftol": self._ftol, "gtol": 1e-10},
-        )
-
-        on_simplex_face = bool(result.x.sum() > 1.0 + 1e-9)
-
-        if on_simplex_face:
-            # Pass 2: SLSQP with the explicit ``sum(w) <= 1`` constraint.
-            # Re-start from the L-BFGS-B output projected onto the face so
-            # SLSQP doesn't have to traverse the same descent again.
-            # SLSQP's relative-change stopping is what gets tripped by the
-            # auto-ftol, so clamp to a safer ceiling here (and only here).
-            x_init = result.x
-            if x_init.sum() > 1.0:
-                x_init = x_init / x_init.sum()  # project onto sum=1
-            constraints = [
-                {
-                    "type": "ineq",
-                    "fun": lambda w: 1.0 - w.sum(),
-                    "jac": lambda w: -np.ones(n),
-                }
-            ]
-            result = minimize(
-                cost_and_grad,
-                x0=x_init,
-                jac=True,
-                method="SLSQP",
-                bounds=self._budget_bounds(),
-                constraints=constraints,
-                options={"maxiter": 2000, "ftol": min(self._ftol, self._FTOL_CEILING)},
-            )
-        self._warn_if_caps_binding(result.x)
+        result = self.optimize(x0=x0)
         return {
             "probs": list(result.x),
             "fun": result.fun,
             "success": result.success,
-            "on_simplex_face": on_simplex_face,
+            "on_simplex_face": bool(abs(result.x.sum() - 1.0) <= 1e-9),
         }
 
 
@@ -1603,7 +1495,7 @@ class MassersteinSolver2(_MassersteinBase):
 
     Residual caveats:
       * dualdeconv2 solves one joint LP (proportions = exact shadow prices);
-        this is a nested optimisation (SLSQP over ``w``, inner MCF).  The
+        this is a nested optimisation (cutting planes over ``w``, inner MCF).  The
         objective and noise/sum behaviour match, but under degeneracy
         (near-collinear components) per-component proportions agree only to
         optimiser tolerance, not bit-exactly.
@@ -1621,7 +1513,7 @@ class MassersteinSolver2(_MassersteinBase):
         (which pre-filters to the theoretical envelope) or call
         ``dualdeconv2`` directly — not this class.
 
-    ``deconvolve()`` uses SLSQP with bounds ``w_k >= 0`` and the explicit
+    ``deconvolve()`` uses cutting planes with bounds ``w_k >= 0`` and the explicit
     inequality constraint ``sum(w_k) <= 1``, which dualdeconv2 enforces
     implicitly via ``sum(probs) + sum(abyss) = 1, abyss >= 0``.
 

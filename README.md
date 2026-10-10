@@ -138,7 +138,11 @@ NetworkSimplex variants, including LinkCut, provide certified cuts and stopping
 bounds, with adaptive supply precision. Certificates cover continuous supplies
 with fixed quantized cost coefficients. Other selected transport backends are
 retained and report an uncertified cutting-plane result; their success flag is
-false. Existing automatic 1D SlopeDP/ConvexSweep selection is unchanged.
+false. NetworkSimplex is the default transport backend in all dimensions.
+The faster 1D SlopeDP/ConvexSweep backends remain explicitly selectable, but
+their cutting-plane results are uncertified. Independent-trash and `p != 1`
+NetworkSimplex fits use dense graphs, which can cost more memory and runtime
+than the analytic chain backends.
 
 ```python
 result = solver.optimize(tol=1e-8)                 # cutting planes, no polish
@@ -149,8 +153,10 @@ result = solver.optimize_descent(maxiter=2000)    # previous descent optimizer
 `optimize_cutting_plane()` remains available, with the same `polish=False`
 default and the parameter spelling `max_iter`. Polishing explicitly calls
 `optimize_descent()`. L-BFGS-B and SLSQP remain available through that method.
-The Masserstein compatibility entry point `deconvolve()` retains its existing
-two-stage descent reproduction; use `optimize()` for the new default.
+The Masserstein compatibility entry point `deconvolve()` also uses cutting
+planes, enforcing nonnegative weights and `sum(weights) <= 1`. Its dictionary
+fields remain available; `on_simplex_face` describes whether the returned
+weights sum to one within 1e-9.
 
 ## Key parameters
 

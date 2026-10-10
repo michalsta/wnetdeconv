@@ -636,12 +636,12 @@ cancels superseded branch runs but never a tag run, under *distinct* group names
 
 ```
 DeconvSolver            builds the WassersteinNetwork; set_point / total_cost /
-│                       gradient / flows; optimize() = L-BFGS-B, w >= 0
-├── ConstrainedSolver    adds Σ wₛ·Iₛ = I_emp; optimize() = SLSQP
+│                       gradient / flows; optimize() = cutting planes, w >= 0
+├── ConstrainedSolver    adds Σ wₛ·Iₛ = I_emp; optimize() = cutting planes
 │   └── MagnetsteinSolver   normalises all spectra to sum 1; MTD/MTD_th naming;
 │                           with MTD_th defaults to independent trash
 │                           (independent_trash=False = annihilating)
-└── _MassersteinBase     deconvolve(): L-BFGS-B, then SLSQP only if Σw > 1
+└── _MassersteinBase     deconvolve(): cutting planes with Σw <= 1
     ├── MassersteinSolver2   mimics masserstein dualdeconv2 (one-sided trash)
     └── MassersteinSolver4   mimics dualdeconv4 (two independent abysses)
 ```

@@ -53,7 +53,7 @@ def test_cp_result_reporting():
     r = s.optimize_cutting_plane()
     assert hasattr(r, "lb") and hasattr(r, "gap") and hasattr(r, "n_cut_repairs")
     assert hasattr(r, "polish_improved")
-    assert r.fun == pytest.approx(r.lb + r.gap, rel=1e-9, abs=1e-12)
+    assert r.upper_bound == pytest.approx(r.lb + r.gap, rel=1e-9, abs=1e-12)
     assert r.status in ("converged", "stalled", "max_iter") or r.status.startswith("lp_failed")
 
 
@@ -68,9 +68,7 @@ def test_polish_never_worse_than_pure_cp():
 
 
 # --- Masserstein face: sum(w) <= 1 carried inside the LP --------------------
-# deconvolve() dispatches to SLSQP when the total-mass constraint binds, and
-# SLSQP can halt at a kink of the piecewise-linear objective and report
-# success there.  optimize_cutting_plane() models the kinks instead.
+# Both public entry points enforce sum(w) <= 1 in the master LP.
 
 from wnetdeconv import MassersteinSolver4
 
@@ -109,7 +107,7 @@ def test_masserstein_cp_lower_bound_brackets_the_optimum():
     s = _masserstein_binding()
     r = s.optimize_cutting_plane(polish=False)
     assert r.lb <= r.fun + 1e-9
-    assert r.fun == pytest.approx(r.lb + r.gap, rel=1e-9, abs=1e-12)
+    assert r.upper_bound == pytest.approx(r.lb + r.gap, rel=1e-9, abs=1e-12)
 
 
 def test_masserstein_polish_never_worse_and_stays_feasible():
@@ -121,7 +119,7 @@ def test_masserstein_polish_never_worse_and_stays_feasible():
 
 
 def test_masserstein_optimize_override_respects_the_face():
-    # DeconvSolver.optimize is bounds-only and would walk off this set.
+    # Infeasible starting weights must be projected onto this class's feasible set.
     s = _masserstein_binding()
     r = s.optimize(x0=np.ones(3))          # x0 deliberately infeasible
     assert r.x.sum() <= 1.0 + 1e-9
