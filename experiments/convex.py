@@ -1,7 +1,6 @@
 """Test whether the optimization basin is convex across multiple dimensions."""
 
 import numpy as np
-from scipy.optimize import minimize
 from wnetdeconv import DeconvSolver, Spectrum_1D
 from wnet.distances import DistanceMetric
 
@@ -33,22 +32,9 @@ def find_global_optimum(solver, bounds, n_starts=20):
             [np.random.uniform(bounds[j][0], bounds[j][1]) for j in range(len(bounds))]
         )
 
-        def temp_cost(point):
-            solver.set_point(point)
-            return solver.total_cost()
-
-        def temp_grad(point):
-            solver.set_point(point)
-            return np.array(solver.gradient())
-
         try:
-            temp_result = minimize(
-                temp_cost,
-                random_start,
-                method="L-BFGS-B",
-                jac=temp_grad,
-                bounds=bounds,
-                options={"disp": False, "maxiter": 100},
+            temp_result = solver.optimize(
+                x0=random_start, bounds=bounds, maxiter=100,
             )
             if best_result is None or temp_result.fun < best_result.fun:
                 best_result = temp_result

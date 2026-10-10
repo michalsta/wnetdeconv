@@ -210,7 +210,7 @@ def run_optimization(
     solver,
     start_point,
     bounds,
-    method="L-BFGS-B",
+    method="cutting_plane",
     use_numerical_grad=False,
     max_iterations=200,
 ):
@@ -220,12 +220,28 @@ def run_optimization(
         solver: DeconvSolver instance
         start_point: Starting point for optimization
         bounds: Bounds for each dimension
-        method: Scipy optimization method name
+        method: "cutting_plane" (default) or an explicit scipy method name
         use_numerical_grad: If True, use numerical gradients; otherwise analytical
-                   (ignored for gradient-free methods)
+                   (ignored for cutting planes and gradient-free methods)
         max_iterations: Maximum number of optimization iterations/function calls.
     """
     trajectory = []
+
+    if method == "cutting_plane":
+        original_set_point = solver.set_point
+
+        def record_point(point):
+            trajectory.append(np.asarray(point).copy())
+            return original_set_point(point)
+
+        solver.set_point = record_point
+        try:
+            result = solver.optimize(
+                x0=start_point, bounds=bounds, maxiter=max_iterations,
+            )
+        finally:
+            solver.set_point = original_set_point
+        return result, np.asarray(trajectory)
 
     def cost_function(point):
         solver.set_point(point)
@@ -296,22 +312,9 @@ def find_global_optimum(solver, bounds, n_starts=20, verbose=True):
             ]
         )
 
-        def temp_cost(point):
-            solver.set_point(point)
-            return solver.total_cost()
-
-        def temp_grad(point):
-            solver.set_point(point)
-            return np.array(solver.gradient())
-
         try:
-            temp_result = minimize(
-                temp_cost,
-                random_start,
-                method="L-BFGS-B",
-                jac=temp_grad,
-                bounds=bounds,
-                options={"disp": False, "maxiter": 100},
+            temp_result = solver.optimize(
+                x0=random_start, bounds=bounds, maxiter=100,
             )
             if best_result is None or temp_result.fun < best_result.fun:
                 best_result = temp_result

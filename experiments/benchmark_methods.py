@@ -3,7 +3,7 @@
 
 Generates the Masserstein hemoglobin example (HbA + HbB + myoglobin at
 multiple charge states), then times every wnet min-cost flow variant through
-a full SLSQP optimisation loop.  Variants that exceed n × (reference time)
+a full cutting-plane optimisation loop.  Variants that exceed n × (reference time)
 are killed with SIGKILL so the C++ code is actually terminated.
 
 Usage
@@ -11,7 +11,7 @@ Usage
     python benchmark_methods.py [options]
 
     --n N         Kill variants > N × reference time  (default: 10)
-    --maxiter N   Max SLSQP iterations per variant     (default: 200)
+    --maxiter N   Max oracle evaluations per variant     (default: 200)
     --jobs N      Parallel subprocesses                (default: cpu_count)
     --seed N      RNG seed for spectrum simulation     (default: 42)
 
@@ -264,11 +264,10 @@ def _bench_worker(
     max_distance: float,
     trash_cost: float,
 ):
-    """Build solver, run SLSQP, put (elapsed, nit, success, fun) in queue."""
+    """Build solver, run cutting planes, put (elapsed, nit, success, fun) in queue."""
     # All imports inside the function for spawn-compatibility.
     import time as _time
     import numpy as _np
-    from scipy.optimize import minimize as _minimize
     from wnetdeconv import DeconvSolver, Spectrum_1D
     from wnet.distances import DistanceMetric
     from wnet.wnet_cpp import (
@@ -317,19 +316,8 @@ def _bench_worker(
         solver=solver,
     )
 
-    def cost_and_grad(point):
-        ds.set_point(point)
-        return ds.total_cost(), ds.gradient()
-
     t0 = _time.perf_counter()
-    result = _minimize(
-        cost_and_grad,
-        x0=_np.ones(n) / n,
-        jac=True,
-        method="SLSQP",
-        bounds=[(0.0, None)] * n,
-        options={"maxiter": maxiter, "ftol": 1e-12},
-    )
+    result = ds.optimize(x0=_np.ones(n) / n, maxiter=maxiter)
     elapsed = _time.perf_counter() - t0
     result_queue.put(
         (elapsed, int(result.nit), bool(result.success), float(result.fun))
@@ -447,7 +435,7 @@ def _parse_args():
         "--maxiter",
         type=int,
         default=200,
-        help="max SLSQP iterations per variant (default: 200)",
+        help="max oracle evaluations per variant (default: 200)",
     )
     p.add_argument(
         "--jobs",

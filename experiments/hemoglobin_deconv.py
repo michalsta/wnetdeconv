@@ -14,7 +14,6 @@ from copy import deepcopy
 import multiprocessing
 
 import numpy as np
-from scipy.optimize import minimize
 from tqdm import tqdm
 
 # --- masserstein: spectrum simulation only -----------------------------------
@@ -139,18 +138,7 @@ def _run_solver(empirical, theoreticals, distance, max_distance, trash_cost):
     )
     n = len(theoreticals)
 
-    def cost_and_grad(point):
-        solver.set_point(point)
-        return solver.total_cost(), solver.gradient()
-
-    result = minimize(
-        cost_and_grad,
-        x0=np.ones(n) / n,
-        jac=True,
-        method="SLSQP",
-        bounds=[(0.0, None)] * n,
-        options={"maxiter": 500, "ftol": 1e-12},
-    )
+    result = solver.optimize(x0=np.ones(n) / n, maxiter=500)
     raw = result.x
     total = raw.sum()
     props = raw / total if total > 0 else raw

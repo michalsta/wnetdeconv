@@ -2,7 +2,6 @@ from wnetdeconv import DeconvSolver
 from wnetdeconv import Spectrum_1D, Spectrum
 from wnet.distances import DistanceMetric
 import numpy as np
-from scipy.optimize import minimize
 
 from glob import glob
 
@@ -49,28 +48,7 @@ x0 = np.ones(len(spectra) - 1)
 x0 = x0 / x0.shape[0]
 bounds = [(0, 2) for _ in x0]
 
-# using optimize method
-# result = solver.optimize(x0=x0)
-
-# custom optimization
-step = [0]
-def cost_and_grad(point):
-    solver.set_point(point)
-    c = solver.total_cost()
-    g = solver.gradient()
-    print(f"step {step[0]:3d}  point=[{' '.join(f"{x:8.4f}," for x in point)}]  cost={c:8.4f}  grad=[{' '.join(f"{x:8.4f}," for x in g)}]")
-    # if step[0]%5==0: print(f"step {step[0]:3d}  point=[{' '.join(f"{x:8.4f}," for x in point)}]  cost={c:8.4f}  grad=[{' '.join(f"{x:8.4f}," for x in g)}]")
-    step[0] += 1
-    return c, g
-
-result = minimize(
-    cost_and_grad,
-    x0=x0,
-    jac=True,
-    method="L-BFGS-B",
-    # method='Nelder-Mead',
-    bounds=bounds,
-)
+result = solver.optimize(x0=x0, bounds=bounds, print_steps=True)
 
 print(f"Optimal point: {result.x}")
 print(f"Cost at optimum: {result.fun:.6f}")

@@ -373,6 +373,7 @@ ARROW_ALPHA = _args.arrow_alpha
 # Optimization methods to test
 # Each entry: (method_name, display_name)
 METHODS = [
+    ("cutting_plane", "Certified Cutting Planes"),
     ("L-BFGS-B", "Limited-memory BFGS with Bounds"),
     ("TNC", "Truncated Newton Conjugate-Gradient"),
     ("SLSQP", "Sequential Least Squares Quadratic Programming"),
@@ -1535,7 +1536,7 @@ def main():
     for run_num in run_nums:
         for method_name, display_name in METHODS:
             is_gradient_free = method_name in GRADIENT_FREE_METHODS
-            if not is_gradient_free:
+            if not is_gradient_free and method_name != "cutting_plane":
                 # Gradient-based: run both numerical and analytical
                 opt_tasks.append(
                     (run_num, method_name, display_name, True)
@@ -1544,7 +1545,7 @@ def main():
                     (run_num, method_name, display_name, False)
                 )  # analytical
             else:
-                # Gradient-free: run only once (analytical)
+                # Gradient-free and cutting planes: run only once
                 opt_tasks.append((run_num, method_name, display_name, False))
 
     print(f"Total optimization tasks: {len(opt_tasks)}")
