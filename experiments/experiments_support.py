@@ -230,9 +230,9 @@ def run_optimization(
     if method == "cutting_plane":
         original_set_point = solver.set_point
 
-        def record_point(point):
+        def record_point(point, **kwargs):
             trajectory.append(np.asarray(point).copy())
-            return original_set_point(point)
+            return original_set_point(point, **kwargs)
 
         solver.set_point = record_point
         try:

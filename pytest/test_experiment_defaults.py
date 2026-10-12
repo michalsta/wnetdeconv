@@ -5,7 +5,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from wnetdeconv import DeconvSolver
+from wnetdeconv import DeconvSolver, Spectrum_1D
+from wnet.distances import DistanceMetric
+from wnet.wnet_cpp import SlopeDP, ConvexSweep
 from test_dual_cutting_plane import make, TRUTH
 
 
@@ -17,10 +19,19 @@ def load_experiment(name):
     return module
 
 
-def test_default_experiment_records_cutting_plane_trajectory(monkeypatch):
+@pytest.mark.parametrize("config", [None, SlopeDP(storage="augmented"), ConvexSweep(storage="augmented")])
+def test_default_experiment_records_cutting_plane_trajectory(monkeypatch, config):
     helpers = load_experiment("experiments_support")
     monkeypatch.setattr(helpers, "minimize", lambda *a, **kw: pytest.fail("Unexpected descent"))
     solver = make(DeconvSolver)
+    if config is not None:
+        solver = DeconvSolver(
+            Spectrum_1D([0, 1, 2], TRUTH),
+            [Spectrum_1D([i], [1]) for i in range(3)],
+            DistanceMetric.L1, solver=config, max_distance=0.1,
+            experimental_trash_cost=0.1, theoretical_trash_cost=0.03,
+            scale_factor=100, allow_intensity_loss=True,
+        )
     original = solver.set_point
     result, trajectory = helpers.run_optimization(
         solver, np.ones(3), [(0, 2)] * 3, max_iterations=100,
