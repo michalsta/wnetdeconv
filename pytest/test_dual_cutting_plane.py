@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from wnet.distances import DistanceMetric
-from wnet.wnet_cpp import NetworkSimplex, WarmMode
+from wnet.wnet_cpp import NetworkSimplex, WarmMode, ConvexSweep
 from wnetdeconv import DeconvSolver, ConstrainedSolver, MagnetsteinSolver, Spectrum_1D
 from wnetdeconv.solver import _cut_model_lower_bound
 
@@ -75,9 +75,34 @@ def test_master_bound_does_not_trust_an_inaccurate_primal_objective():
     assert bound == pytest.approx(0.3)
 
 
+@pytest.mark.parametrize("cls", [DeconvSolver, ConstrainedSolver, MagnetsteinSolver])
+@pytest.mark.parametrize("p", [1.5, 2, 3])
+def test_convex_sweep_certifies_continuous_kink(cls, p):
+    empirical = Spectrum_1D([0, 1, 2], TRUTH)
+    components = [Spectrum_1D([i], [1]) for i in range(3)]
+    options = dict(empirical_spectrum=empirical, theoretical_spectra=components,
+                   distance=DistanceMetric.L1, solver=ConvexSweep(), p=p)
+    if cls is MagnetsteinSolver:
+        options.update(MTD=0.1, MTD_th=0.03)
+    else:
+        options.update(max_distance=0.1, experimental_trash_cost=0.1,
+                       theoretical_trash_cost=0.03, scale_factor=13,
+                       allow_intensity_loss=True)
+    solver = cls(**options)
+    result = solver.optimize(maxiter=100, tol=1e-8)
+    assert isinstance(solver.graph._solver, ConvexSweep)
+    assert result.bound_certified
+    assert result.success, result
+    assert result.n_cut_repairs == 0
+    assert 0 <= result.gap <= 1e-8
+    assert result.lb <= 1e-10
+    assert result.fun <= result.upper_bound
+    assert np.abs(result.x - TRUTH).sum() < 1e-6
+    assert solver.total_cost() == pytest.approx(result.fun, abs=1e-12)
+
+
 @pytest.mark.parametrize("factor", [1, 0, -1, np.inf, np.nan])
 def test_precision_factor_validation(factor):
     solver = make(DeconvSolver)
     with pytest.raises(ValueError):
         solver.refine_intensity_precision(factor)
-

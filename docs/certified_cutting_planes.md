@@ -1,7 +1,7 @@
 # Certified cutting planes
 
 `optimize()` now uses cutting planes with `polish=False`. Select a
-NetworkSimplex configuration to use the certified dual-cut oracle:
+NetworkSimplex, SlopeDP or ConvexSweep configuration to use the certified dual-cut oracle:
 
 ```python
 from wnet.distances import DistanceMetric
@@ -21,11 +21,18 @@ result = solver.optimize(tol=1e-8)
 print(result.x, result.success, result.gap)
 ```
 
-All transport evaluations use wnet/pylmcf integer network simplex. The small
+Transport evaluations use the selected integer backend. The small
 Kelley master LP only optimizes mixture weights and the objective epigraph.
 Node potentials provide one common matching dual; it produces supporting cuts
 for continuous supplies with the graph's fixed quantized cost coefficients.
 For the construction and supply-error proof, see wnet's `docs/dual_cuts.md`.
+
+For 1D `p > 1`, explicitly pass `solver=ConvexSweep()` and the desired `p`.
+ConvexSweep supplies a common feasible dual through a lazy auxiliary integer
+simplex solve over profitable pairs, validated against its sweep objective and
+cached per solution. This adds certificate-recovery time and up to quadratic
+memory for a wide matching window. Its discrete marginal derivatives alone
+are not used as certified cuts. The selected transport backend is preserved.
 
 The result separates the rounded cost (`fun`) from its continuous-supply upper
 bound (`upper_bound`). `rounding_error` bounds their difference, while `lb` is
@@ -68,5 +75,5 @@ optional `polish=True`. Custom bounds and mass constraints also apply during
 polishing. `optimize_cutting_plane()` retains its `max_iter` spelling and now
 also defaults to no polishing. Masserstein `deconvolve()` uses the same default
 cutting-plane optimizer and preserves its dictionary return format. Analytic
-1D transport backends remain explicitly selectable; NetworkSimplex is now the
-default in all dimensions so default fits can certify their stopping bounds.
+1D transport backends remain explicitly selectable. The default is SlopeDP
+for 1D `p == 1` chains and NetworkSimplex otherwise.

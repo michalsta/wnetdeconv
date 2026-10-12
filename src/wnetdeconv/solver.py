@@ -185,9 +185,9 @@ class DeconvSolver:
     p : float, optional
         Wasserstein transport order (default 1.0).  Matching a unit across
         distance ``d`` costs ``d**p``, so ``total_cost()`` and gradients are
-        in W_p**p units.  For ``p != 1`` on 1-D data the chain-native
-        ConvexSweep solver (wnet >= 1.3.0) is the default; any explicitly
-        requested other solver forces the dense factory.
+        in W_p**p units. For ``p != 1`` the default is dense NetworkSimplex.
+        Explicitly select ConvexSweep for chain-native 1-D transport and
+        certified cutting planes with auxiliary dual recovery.
 
     Attributes
     ----------
@@ -648,7 +648,7 @@ class DeconvSolver:
         mass constraints remain active. ``print_steps`` reports model progress.
         Set ``polish=True`` to finish with descent, or call
         :meth:`optimize_descent` explicitly for the previous optimizer.
-        Certificates require NetworkSimplex or SlopeDP; other backends retain
+        Certificates require NetworkSimplex, SlopeDP or ConvexSweep; other backends retain
         their uncertified cutting-plane search without replacing the backend.
         """
         return self.optimize_cutting_plane(
@@ -726,12 +726,15 @@ class DeconvSolver:
     ) -> OptimizeResult:
         """Minimize transport cost with Kelley cutting planes.
 
-        NetworkSimplex and SlopeDP construct common feasible dual cuts for the
+        NetworkSimplex, SlopeDP and ConvexSweep construct common feasible dual cuts for the
         continuous-supply objective with fixed quantized costs. Integer solves
         provide upper bounds including explicit supply-rounding uncertainty.
         Precision is refined adaptively; rebuilding clears all cuts and bounds
         because the cost scale may change. No generic LP transport backend is
         used. The small master LP optimizes mixture weights only.
+
+        ConvexSweep recovers certificates lazily with an auxiliary integer
+        simplex solve over profitable pairs; recovery can use quadratic memory.
 
         Other backends retain the legacy marginal-cut search and return
         ``bound_certified=False`` and ``success=False``; their model gap is
@@ -862,8 +865,8 @@ class DeconvSolver:
             fixed_a_ub = np.column_stack([rows, np.zeros(len(rows))])
             fixed_b_ub = np.atleast_1d(np.asarray(b_ub, dtype=float))
 
-        from wnet.wnet_cpp import NetworkSimplex, SlopeDP
-        certified = isinstance(self.graph._solver, (NetworkSimplex, SlopeDP))
+        from wnet.wnet_cpp import NetworkSimplex, SlopeDP, ConvexSweep
+        certified = isinstance(self.graph._solver, (NetworkSimplex, SlopeDP, ConvexSweep))
         evals_x: list[np.ndarray] = []
         evals_f: list[float] = []
         cut_g: list[np.ndarray] = []

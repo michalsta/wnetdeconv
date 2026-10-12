@@ -134,14 +134,17 @@ transport evaluations (default 200). `tol` is a positive absolute objective-gap
 tolerance (default 1e-9). Custom bounds intersect the safe flow-budget box, and
 the class's mass constraints remain active.
 
-NetworkSimplex variants (including LinkCut) and 1D SlopeDP provide certified
+NetworkSimplex variants (including LinkCut), 1D SlopeDP and ConvexSweep provide certified
 cuts and stopping bounds, with adaptive supply precision. Certificates cover
 continuous supplies with fixed quantized cost coefficients. 1D `p == 1` fits
 now default to `SlopeDP(dual_mode="lazy")`; other fits use NetworkSimplex.
 Pass `solver=SlopeDP(dual_mode="cluster")` to retain DP cluster flows for
 recovery, or `solver=NetworkSimplex()` to select simplex explicitly. Lazy mode
 adds no retained cluster state and does no recovery until a cut is requested.
-Other selected backends, including ConvexSweep, report uncertified results
+For `p > 1`, pass `solver=ConvexSweep()` to use chain transport with certified
+cutting planes. Its dual recovery lazily runs an auxiliary simplex solve over
+profitable pairs and caches the result; this can require quadratic memory in
+a wide matching window. Other selected backends report uncertified results
 with a false success flag. `p != 1` NetworkSimplex fits use dense graphs.
 
 ```python
