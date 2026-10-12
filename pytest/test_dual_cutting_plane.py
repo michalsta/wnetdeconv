@@ -36,6 +36,7 @@ def test_common_dual_solves_continuous_kink(cls, mode):
     solver = make(cls, mode)
     result = solver.optimize_cutting_plane(max_iter=100, tol=1e-8, polish=False)
     assert result.bound_certified
+    assert solver.graph.dual_cut()["upper_bound"] == pytest.approx(result.upper_bound)
     assert result.success, result
     assert result.n_cut_repairs == 0
     assert 0 <= result.gap <= 1e-8
@@ -77,7 +78,8 @@ def test_master_bound_does_not_trust_an_inaccurate_primal_objective():
 
 @pytest.mark.parametrize("cls", [DeconvSolver, ConstrainedSolver, MagnetsteinSolver])
 @pytest.mark.parametrize("p", [1.5, 2, 3])
-def test_convex_sweep_certifies_continuous_kink(cls, p):
+@pytest.mark.parametrize("polish", [False, True])
+def test_convex_sweep_certifies_continuous_kink(cls, p, polish):
     empirical = Spectrum_1D([0, 1, 2], TRUTH)
     components = [Spectrum_1D([i], [1]) for i in range(3)]
     options = dict(empirical_spectrum=empirical, theoretical_spectra=components,
@@ -89,9 +91,10 @@ def test_convex_sweep_certifies_continuous_kink(cls, p):
                        theoretical_trash_cost=0.03, scale_factor=13,
                        allow_intensity_loss=True)
     solver = cls(**options)
-    result = solver.optimize(maxiter=100, tol=1e-8)
+    result = solver.optimize(maxiter=100, tol=1e-8, polish=polish)
     assert isinstance(solver.graph._solver, ConvexSweep)
     assert result.bound_certified
+    assert solver.graph.dual_cut()["upper_bound"] == pytest.approx(result.upper_bound)
     assert result.success, result
     assert result.n_cut_repairs == 0
     assert 0 <= result.gap <= 1e-8
@@ -106,3 +109,25 @@ def test_precision_factor_validation(factor):
     solver = make(DeconvSolver)
     with pytest.raises(ValueError):
         solver.refine_intensity_precision(factor)
+
+
+@pytest.mark.parametrize("polish", [False, True])
+def test_convex_sweep_returns_certificate_after_iteration_limit(polish):
+    solver = DeconvSolver(
+        empirical_spectrum=Spectrum_1D([0, 1, 2], TRUTH),
+        theoretical_spectra=[Spectrum_1D([i], [1]) for i in range(3)],
+        distance=DistanceMetric.L1,
+        solver=ConvexSweep(),
+        p=2,
+        max_distance=0.1,
+        experimental_trash_cost=0.1,
+        theoretical_trash_cost=0.03,
+        scale_factor=13,
+        allow_intensity_loss=True,
+    )
+    result = solver.optimize_cutting_plane(max_iter=1, tol=1e-12, polish=polish)
+    assert result.bound_certified
+    assert solver.total_cost() == pytest.approx(result.fun)
+    assert solver.graph.dual_cut()["upper_bound"] == pytest.approx(result.upper_bound)
+    if polish:
+        assert result.polish_improved

@@ -28,11 +28,14 @@ for continuous supplies with the graph's fixed quantized cost coefficients.
 For the construction and supply-error proof, see wnet's `docs/dual_cuts.md`.
 
 For 1D `p > 1`, explicitly pass `solver=ConvexSweep()` and the desired `p`.
-ConvexSweep supplies a common feasible dual through a lazy auxiliary integer
-simplex solve over profitable pairs, validated against its sweep objective and
-cached per solution. This adds certificate-recovery time and up to quadratic
-memory for a wide matching window. Its discrete marginal derivatives alone
-are not used as certified cuts. The selected transport backend is preserved.
+ConvexSweep supplies a common feasible dual through templated DP traceback
+and native potential recovery. Cutting planes automatically request
+`with_duals=True`; ordinary cost evaluations omit traceback and recovery.
+Certificates are validated eagerly and cached for cut queries. Traceback can
+require quadratic temporary memory for wide windows, while potential recovery
+scans profitable windows without storing their pair graph. Its discrete
+marginal derivatives alone are not used as certified cuts. The selected
+transport backend is preserved.
 
 The result separates the rounded cost (`fun`) from its continuous-supply upper
 bound (`upper_bound`). `rounding_error` bounds their difference, while `lb` is

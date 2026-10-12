@@ -142,9 +142,9 @@ Pass `solver=SlopeDP(dual_mode="cluster")` to retain DP cluster flows for
 recovery, or `solver=NetworkSimplex()` to select simplex explicitly. Lazy mode
 adds no retained cluster state and does no recovery until a cut is requested.
 For `p > 1`, pass `solver=ConvexSweep()` to use chain transport with certified
-cutting planes. Its dual recovery lazily runs an auxiliary simplex solve over
-profitable pairs and caches the result; this can require quadratic memory in
-a wide matching window. Other selected backends report uncertified results
+cutting planes. Cutting planes request templated traceback and eager native
+dual recovery automatically. Ordinary cost solves retain no traceback; traced
+solves can require quadratic temporary memory in a wide matching window. Other selected backends report uncertified results
 with a false success flag. `p != 1` NetworkSimplex fits use dense graphs.
 
 ```python

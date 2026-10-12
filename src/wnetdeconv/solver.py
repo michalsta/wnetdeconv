@@ -187,7 +187,7 @@ class DeconvSolver:
         distance ``d`` costs ``d**p``, so ``total_cost()`` and gradients are
         in W_p**p units. For ``p != 1`` the default is dense NetworkSimplex.
         Explicitly select ConvexSweep for chain-native 1-D transport and
-        certified cutting planes with auxiliary dual recovery.
+        certified cutting planes with traced native dual recovery.
 
     Attributes
     ----------
@@ -543,7 +543,9 @@ class DeconvSolver:
             for t in self.theoretical_spectra
         )
 
-    def set_point(self, point: Union[Sequence[float], np.ndarray]) -> None:
+    def set_point(
+        self, point: Union[Sequence[float], np.ndarray], *, with_duals: bool = False
+    ) -> None:
         """
         Set proportions of theoretical spectra and solve the graph at the given point.
 
@@ -551,13 +553,18 @@ class DeconvSolver:
         ----------
         point : Sequence[float] or np.ndarray
             Proportions for each theoretical spectrum.
+        with_duals : bool, default False
+            Trace ConvexSweep and recover a certificate eagerly for dual cuts.
 
         Returns
         -------
         None
         """
         self.point = point
-        self.graph.solve(point)
+        if with_duals:
+            self.graph.solve(point, with_duals=True)
+        else:
+            self.graph.solve(point)
 
     def total_cost(self) -> float:
         """
@@ -733,8 +740,8 @@ class DeconvSolver:
         because the cost scale may change. No generic LP transport backend is
         used. The small master LP optimizes mixture weights only.
 
-        ConvexSweep recovers certificates lazily with an auxiliary integer
-        simplex solve over profitable pairs; recovery can use quadratic memory.
+        ConvexSweep traces the DP and recovers certificates eagerly using
+        native potential propagation; traceback can use quadratic memory.
 
         Other backends retain the legacy marginal-cut search and return
         ``bound_certified=False`` and ``success=False``; their model gap is
@@ -789,7 +796,11 @@ class DeconvSolver:
         """Warm-start the class's descent optimizer from the cutting-plane
         answer; keep the cheaper of the two evaluated points."""
         import warnings
+        from wnet.wnet_cpp import ConvexSweep
 
+        sweep_duals = cp_result.get("bound_certified", False) and isinstance(
+            self.graph._solver, ConvexSweep
+        )
         if bounds is not None:
             lower, caps = self._cutting_plane_box(bounds)
             bounds = list(zip(lower, caps))
@@ -815,7 +826,7 @@ class DeconvSolver:
             cp_result.x = np.asarray(descent.x, dtype=float)
             cp_result.fun = f_descent
             if cp_result.get("bound_certified", False):
-                self.set_point(descent.x)
+                self.set_point(descent.x, with_duals=sweep_duals)
                 certificate = self.graph.dual_cut()
                 cp_result.upper_bound = certificate["upper_bound"]
                 cp_result.rounding_error = certificate["rounding_error"]
@@ -825,7 +836,7 @@ class DeconvSolver:
                     cp_result.status = "converged"
             else:
                 cp_result.gap = f_descent - cp_result.lb
-        self.set_point(cp_result.x)
+        self.set_point(cp_result.x, with_duals=sweep_duals)
         cp_result.polish_improved = improved
         cp_result.message += (
             f"; polish {'improved to ' + format(f_descent, '.6g') if improved else 'kept the cutting-plane point'}"
@@ -867,6 +878,7 @@ class DeconvSolver:
 
         from wnet.wnet_cpp import NetworkSimplex, SlopeDP, ConvexSweep
         certified = isinstance(self.graph._solver, (NetworkSimplex, SlopeDP, ConvexSweep))
+        sweep_duals = isinstance(self.graph._solver, ConvexSweep)
         evals_x: list[np.ndarray] = []
         evals_f: list[float] = []
         cut_g: list[np.ndarray] = []
@@ -903,7 +915,7 @@ class DeconvSolver:
             x = np.clip(feasible.x[:n], lower, caps)
 
         for nit in range(1, max_iter + 1):
-            self.set_point(x)
+            self.set_point(x, with_duals=sweep_duals)
             if certified:
                 certificate = self.graph.dual_cut()
                 f = float(certificate["rounded_cost"])
@@ -988,11 +1000,11 @@ class DeconvSolver:
 
         # A rebuild on the last iteration still needs a fresh returned value.
         if not np.isfinite(best_f):
-            self.set_point(best_x)
+            self.set_point(best_x, with_duals=sweep_duals)
             best_f = float(self.total_cost())
             certificate = self.graph.dual_cut()
             best_upper, best_error = certificate["upper_bound"], certificate["rounding_error"]
-        self.set_point(best_x)
+        self.set_point(best_x, with_duals=sweep_duals)
         gap = best_upper - lb
         return OptimizeResult(
             x=best_x, fun=best_f, upper_bound=best_upper, lb=lb, gap=gap,
