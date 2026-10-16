@@ -466,6 +466,13 @@ class DeconvSolver:
                 self.graph.add_theoretical_trash(eff_theo)
         else:
             self.graph.add_simple_trash(trash_cost)
+        # Largest per-unit escape price: with the empirical mass it sets the
+        # objective's natural scale (the cost of dumping everything), which
+        # the precision-refinement fidelity gate measures cost rounding
+        # against even when the fit itself is exact (objective ~ 0).
+        prices = ([c for c in (eff_exp, eff_theo) if c is not None]
+                  if independent_trash or asymmetric else [trash_cost])
+        self._escape_price = float(max(prices))
         # Budget the integer cost scale for the proportions the outer loop will
         # actually visit: the optimum for component i can hardly exceed the
         # mass ratio emp_total/theo_total_i (the proportion at which that
@@ -754,10 +761,17 @@ class DeconvSolver:
 
         The result includes ``fun`` (rounded network cost), ``upper_bound``
         (continuous objective upper bound), ``lb``, ``gap=upper_bound-lb``,
-        ``rounding_error``, ``bound_certified``, ``n_precision_refinements``,
-        ``n_cut_repairs`` and ``polish_improved``. A certified success requires
-        a nonnegative gap no larger than ``tol``. Bounds use fixed quantized
-        edge costs, rather than claiming exact original real cost coefficients.
+        ``rounding_error``, ``cost_rounding_error``, ``bound_certified``,
+        ``n_precision_refinements``, ``n_cut_repairs`` and ``polish_improved``.
+        A certified success requires a nonnegative gap no larger than ``tol``.
+        Bounds use fixed quantized edge costs, rather than claiming exact
+        original real cost coefficients; ``cost_rounding_error`` bounds how far
+        the returned point's real cost can exceed its quantized cost. A
+        precision refinement is kept only if it does not coarsen the cost grid
+        past ``max(tol, 1e-6 |fun|)`` at the best point (otherwise it is undone
+        and the status is ``"precision_limit"``), so the certified problem
+        stays faithful to the real one. Set ``real_cost_certificate = True`` on
+        the solver to certify the real-cost problem instead.
         """
         n = len(self.theoretical_spectra)
         if x0 is None:
@@ -774,6 +788,52 @@ class DeconvSolver:
             result = self._polish(result, bounds=bounds)
         self._warn_if_caps_binding(result.x)
         return result
+
+    #: Certify the real-cost problem instead of the network's quantized one
+    #: (see :meth:`_certificate`).  Off by default: wnet's certificates refer
+    #: to the fixed quantized costs, and a real-cost gap of the default
+    #: tolerance (1e-9) is often below what the int64 cost/supply budget can
+    #: resolve, so a real-cost certificate would rarely reach ``success``.
+    real_cost_certificate: bool = False
+
+    def _certificate(self) -> dict:
+        """``dual_cut()`` plus its split into supply and cost error.
+
+        wnet's cut and bounds refer to the network's fixed *quantized* costs.
+        ``cost_error`` is wnet's ``cost_rounding_error``: how far the current
+        solution's real cost can exceed its quantized cost.  By default it is
+        a diagnostic only.  With :attr:`real_cost_certificate` the certificate
+        is widened into one for the real-cost problem: the cut is scaled down
+        by the largest relative cost round-up, the upper bound is raised by
+        ``cost_error`` and ``rounding_error`` becomes supply plus cost error.
+        With a wnet that does not report the cost terms they are zero.
+        """
+        c = dict(self.graph.dual_cut())
+        rho = float(c.get("cost_round_up_ratio", 0.0))
+        cost_error = float(c.get("cost_rounding_error", 0.0))
+        lower_slack = float(c.get("cost_lower_slack", 0.0))
+        c["gradient"] = np.asarray(c["gradient"], dtype=float)
+        c["intercept"] = float(c["intercept"])
+        c["upper_bound"] = float(c["upper_bound"])
+        c["supply_error"] = float(c["rounding_error"])
+        c["cost_error"] = cost_error
+        if self.real_cost_certificate:
+            shrink = 1.0 / (1.0 + rho)
+            c["intercept"] = c["intercept"] * shrink - lower_slack
+            c["gradient"] = c["gradient"] * shrink
+            c["upper_bound"] += cost_error
+            c["rounding_error"] = c["supply_error"] + cost_error
+        return c
+
+    def _precision_state(self):
+        g = self.graph
+        return (g._wnet_obj, g._intensity_scale_arg, g._cost_scaling_arg,
+                self.sf_intensity, self.scale_factor, self._ftol, self.point)
+
+    def _restore_precision_state(self, state) -> None:
+        g = self.graph
+        (g._wnet_obj, g._intensity_scale_arg, g._cost_scaling_arg,
+         self.sf_intensity, self.scale_factor, self._ftol, self.point) = state
 
     def refine_intensity_precision(self, factor: float = 10.0) -> None:
         """Rebuild the same network at finer supply precision with safe cost scaling.
@@ -827,9 +887,10 @@ class DeconvSolver:
             cp_result.fun = f_descent
             if cp_result.get("bound_certified", False):
                 self.set_point(descent.x, with_duals=sweep_duals)
-                certificate = self.graph.dual_cut()
+                certificate = self._certificate()
                 cp_result.upper_bound = certificate["upper_bound"]
                 cp_result.rounding_error = certificate["rounding_error"]
+                cp_result.cost_rounding_error = certificate["cost_error"]
                 cp_result.gap = cp_result.upper_bound - cp_result.lb
                 cp_result.success = 0 <= cp_result.gap <= cp_result.gap_tolerance
                 if cp_result.success:
@@ -888,6 +949,7 @@ class DeconvSolver:
         best_f = np.inf
         best_upper = np.inf
         best_error = np.inf
+        best_supply_error = best_cost_error = np.inf
         best_x = np.asarray(x0, dtype=float)
         lb = -np.inf
         x = np.clip(np.asarray(x0, dtype=float), lower, caps)
@@ -917,12 +979,14 @@ class DeconvSolver:
         for nit in range(1, max_iter + 1):
             self.set_point(x, with_duals=sweep_duals)
             if certified:
-                certificate = self.graph.dual_cut()
+                certificate = self._certificate()
                 f = float(certificate["rounded_cost"])
-                g = np.asarray(certificate["gradient"], dtype=float)
-                intercept = float(certificate["intercept"])
-                upper = float(certificate["upper_bound"])
-                error = float(certificate["rounding_error"])
+                g = certificate["gradient"]
+                intercept = certificate["intercept"]
+                upper = certificate["upper_bound"]
+                error = certificate["rounding_error"]
+                supply_error = certificate["supply_error"]
+                cost_error = certificate["cost_error"]
             else:
                 f = float(self.total_cost())
                 # Legacy backends retain their heuristic search, but its cuts
@@ -930,12 +994,14 @@ class DeconvSolver:
                 g = np.asarray(self.gradient(), dtype=float)
                 intercept = f - float(g @ x)
                 upper, error = f, np.nan
+                supply_error = cost_error = np.nan
             evals_x.append(x.copy())
             evals_f.append(f)
             cut_g.append(g)
             cut_b.append(intercept)
             if upper < best_upper:
                 best_f, best_upper, best_error, best_x = f, upper, error, x.copy()
+                best_supply_error, best_cost_error = supply_error, cost_error
 
             if not certified:
                 fx, xs = np.asarray(evals_f), np.stack(evals_x)
@@ -981,15 +1047,36 @@ class DeconvSolver:
                 if n_refinements >= 8:
                     status = "precision_limit"
                     break
+                state = self._precision_state()
                 try:
                     self.refine_intensity_precision(10)
                 except OverflowError:
+                    status = "precision_limit"
+                    break
+                # Fidelity gate.  With the int64 budget fixed, a finer supply
+                # grid can force a coarser cost grid.  Certificates refer to
+                # the quantized costs, so a refinement that coarsens them too
+                # far silently changes the problem being solved: on a fine
+                # profile grid it once rounded one-step transport costs to
+                # zero and certified a degenerate point as optimal.  Keep a
+                # refinement only if the cost rounding at the best point stays
+                # within max(tol, its previous value, 1e-6 x the objective
+                # scale), the scale being max(|f|, escape price x empirical
+                # mass); otherwise restore the previous network and stop.
+                self.set_point(best_x, with_duals=sweep_duals)
+                refined_cost_error = float(self.graph.dual_cut().get("cost_rounding_error", 0.0))
+                scale = max(abs(float(self.total_cost())),
+                            self._escape_price * float(self.empirical_spectrum.sum_intensities))
+                fidelity = max(gap_tol, best_cost_error, 1e-6 * scale)
+                if refined_cost_error > fidelity:
+                    self._restore_precision_state(state)
                     status = "precision_limit"
                     break
                 n_refinements += 1
                 # Cost scale can change: discard all previous cuts and bounds.
                 evals_x.clear(); evals_f.clear(); cut_g.clear(); cut_b.clear()
                 best_f = best_upper = best_error = np.inf
+                best_supply_error = best_cost_error = np.inf
                 lb = -np.inf
                 x = best_x.copy()
                 continue
@@ -1002,13 +1089,15 @@ class DeconvSolver:
         if not np.isfinite(best_f):
             self.set_point(best_x, with_duals=sweep_duals)
             best_f = float(self.total_cost())
-            certificate = self.graph.dual_cut()
+            certificate = self._certificate()
             best_upper, best_error = certificate["upper_bound"], certificate["rounding_error"]
+            best_cost_error = certificate["cost_error"]
         self.set_point(best_x, with_duals=sweep_duals)
         gap = best_upper - lb
         return OptimizeResult(
             x=best_x, fun=best_f, upper_bound=best_upper, lb=lb, gap=gap,
-            rounding_error=best_error, gap_tolerance=gap_tol,
+            rounding_error=best_error, cost_rounding_error=best_cost_error,
+            gap_tolerance=gap_tol,
             bound_certified=certified, n_precision_refinements=n_refinements,
             nit=nit, n_cut_repairs=n_repairs,
             polish_improved=False,
