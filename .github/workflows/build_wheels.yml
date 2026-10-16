@@ -169,7 +169,7 @@ jobs:
           python -c "import wnetdeconv; assert wnetdeconv.is_nanobind_split(), 'a published wheel must be a split build'"
       - name: Run the test suite
         run: |
-          python -m pip install pytest pandas
+          python -m pip install pytest pandas tqdm
           python -m pytest pytest/ -q
 
   # The abi3t wheel is the only artifact whose whole point is that the GIL stays
@@ -211,7 +211,7 @@ jobs:
           python -c "import wnetdeconv; assert wnetdeconv.is_nanobind_split(), 'an abi3t wheel is a split build by construction -- abi3t exists only in split mode'"
       - name: Run the test suite, and prove the free-threading tests ran
         run: |
-          python -m pip install pytest pandas
+          python -m pip install pytest pandas tqdm
           python -m pytest pytest/ -q
           python -m pytest pytest/test_free_threading.py -q --no-header -rN \
             | tee /tmp/ft.log
@@ -269,7 +269,7 @@ jobs:
           /venv/bin/python -c 'import wnetdeconv; assert not wnetdeconv.is_nanobind_split(), "musl must fall back to a linked build"'
       - name: Run the test suite
         run: |
-          /venv/bin/python -m pip install pytest pandas
+          /venv/bin/python -m pip install pytest pandas tqdm
           /venv/bin/python -m pytest pytest/ -q
 
   # Free-threaded CPython before 3.15 predates nanobind-backend's abi3t wheels,
@@ -309,7 +309,7 @@ jobs:
           python -c "import wnetdeconv; assert not wnetdeconv.is_nanobind_split(), 'free-threaded 3.14 must fall back to a linked build'"
       - name: Run the test suite
         run: |
-          python -m pip install pytest pandas
+          python -m pip install pytest pandas tqdm
           python -m pytest pytest/ -q
 
   # Split mode is CPython-only, so PyPy gets no wheel. It must still be able to
@@ -368,5 +368,5 @@ jobs:
 
       - name: Run the test suite
         run: |
-          python -m pip install pytest pandas
+          python -m pip install pytest pandas tqdm
           python -m pytest pytest/ -q
