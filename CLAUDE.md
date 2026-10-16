@@ -688,6 +688,24 @@ DeconvSolver            builds the WassersteinNetwork; set_point / total_cost /
   (O(m+n)) vs dense (O(m·n)) network construction; `force_dense_1d=True` forces dense.
 - Quantisation silently drops peaks below one integer unit. Construction raises
   `ValueError` past a dropped-fraction threshold unless `allow_intensity_loss=True`.
+- **Precision refinement can destroy the cost grid.** The int64 budget ties the
+  two grids: each x10 `refine_intensity_precision()` roughly divides the cost
+  scale by 10. Certificates (wnet `dual_cut()`) refer to the *quantized* costs,
+  so on fine profile grids unchecked refinement once rounded one-step transport
+  costs to zero and certified `[0, 0, 0, 1]` against true weights of ~[0.37,
+  0.27, 0.32, 0.03]. The cutting-plane loop now keeps a refinement only if the
+  cost rounding at the best point (wnet's `cost_rounding_error`) stays within
+  `max(tol, previous, 1e-6 x max(|f|, escape price x empirical mass))`;
+  otherwise it restores the previous network and stops with `precision_limit`.
+  `solver.real_cost_certificate = True` certifies the real-cost problem instead
+  (`_certificate()` widens the cut by the cost rounding); it is off by default
+  because a real-cost gap of 1e-9 is often below int64 resolution.
+- **The 1-D cold-restart policy keys on a common lattice, not grid identity.**
+  `_all_spectra_on_common_lattice()`: every spectrum uniformly spaced with one
+  common step, any offset. Equal gaps make the chain degenerate and dual repair
+  slow whatever the offset (half-step offset: 19x slower with repair). Same
+  decision as the old identical-grid test on all nine real datasets (pinene,
+  overlap, perfumes, shim gated; hemoglobin, PBTTT p1-p3/3_7p not).
 
 The long docstrings in `solver.py` record *why* each masserstein reproduction is
 parameterised the way it is (e.g. `theo_trash_mult=10` as a +inf proxy, and the

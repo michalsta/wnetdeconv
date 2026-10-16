@@ -358,7 +358,7 @@ class DeconvSolver:
 
         # SlopeDP supplies certified dual cuts on 1D p=1 chains.
         # Keep explicit backend choices and dense graph semantics intact.
-        # Shared-grid NetworkSimplex warm repair can be slow; retain the cold
+        # Lattice (profile) NetworkSimplex warm repair can be slow; retain the cold
         # restart policy unless the caller explicitly configured repair.
         from wnet.wnet_cpp import (
             NetworkSimplex as _NSConfig,
@@ -390,12 +390,14 @@ class DeconvSolver:
             and not force_dense_1d
             and isinstance(solver, _NSConfig)
             and solver.warm_violation_limit == -2
-            and self._all_spectra_share_grid()
+            and self._all_spectra_on_common_lattice()
         ):
             # Copy the config so this policy does not mutate caller state.
             cfg = _NSConfig()
             cfg.pivot = solver.pivot
             cfg.warm = solver.warm
+            if hasattr(cfg, "repair_max_nodes"):
+                cfg.repair_max_nodes = solver.repair_max_nodes
             cfg.warm_violation_limit = 0
             solver = cfg
 
@@ -549,6 +551,35 @@ class DeconvSolver:
             np.array_equal(emp_pos, np.asarray(t.positions))
             for t in self.theoretical_spectra
         )
+
+    def _all_spectra_on_common_lattice(self, rtol: float = 1e-6) -> bool:
+        """True if every spectrum is 1-D and uniformly spaced with one common
+        step, at any offset (profile-mode data, possibly resampled or
+        referenced differently).
+
+        This is what makes warm dual repair lose on the 1-D chain: equal gaps
+        make the chain's costs massively degenerate, so a repair walks long
+        bound-flip sequences.  An offset changes nothing about that -- a
+        half-step offset measured 19x slower with repair than with cold
+        restarts -- so the test must not demand identical grids.  Includes
+        the identical-grid case.
+        """
+        if self._all_spectra_share_grid():
+            return True
+        step = None
+        for spec in (self.empirical_spectrum, *self.theoretical_spectra):
+            pos = np.asarray(spec.positions, dtype=float)
+            if pos.ndim != 2 or pos.shape[0] != 1 or pos.shape[1] < 3:
+                return False
+            gaps = np.diff(np.sort(pos[0]))
+            g = float(np.median(gaps))
+            if not g > 0 or np.abs(gaps - g).max() > rtol * g:
+                return False
+            if step is None:
+                step = g
+            elif abs(g - step) > rtol * step:
+                return False
+        return True
 
     def set_point(
         self, point: Union[Sequence[float], np.ndarray], *, with_duals: bool = False
