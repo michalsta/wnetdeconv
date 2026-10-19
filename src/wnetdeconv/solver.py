@@ -62,6 +62,23 @@ def _cut_model_lower_bound(lp, gradients, intercepts, caps, fixed_a=None,
     return float(bound - cushion)
 
 
+def _transfer_bounds(cut: dict):
+    """``(rho, sigma, A)`` relating a network's quantized objective Q to the
+    real-cost objective R at every point: ``(1 - sigma) R - A <= Q <=
+    (1 + rho) R + A``.  None when wnet does not report them."""
+    try:
+        bounds = tuple(float(cut[k]) for k in (
+            "transfer_round_up_ratio", "transfer_round_down_ratio",
+            "transfer_absolute_error"))
+    except KeyError:
+        return None
+    rho, sigma, a = bounds
+    if not (np.isfinite(rho) and np.isfinite(a) and rho >= 0 and a >= 0
+            and 0 <= sigma < 1):
+        return None
+    return bounds
+
+
 def _check_rounding_loss(empirical, theoreticals, sf, max_dropped_fraction):
     """Python mirror of wnet's ``ScalerBase::check_rounding_loss``: intensities
     quantize to integer supplies as round-toward-zero(intensity * sf), and this
@@ -799,9 +816,10 @@ class DeconvSolver:
         NetworkSimplex, SlopeDP and ConvexSweep construct common feasible dual cuts for the
         continuous-supply objective with fixed quantized costs. Integer solves
         provide upper bounds including explicit supply-rounding uncertainty.
-        Precision is refined adaptively; rebuilding clears all cuts and bounds
-        because the cost scale may change. No generic LP transport backend is
-        used. The small master LP optimizes mixture weights only.
+        Precision is refined adaptively. A rebuild may change the cost scale,
+        so upper bounds are discarded and cuts are carried over through wnet's
+        cost transfer bounds (discarded when wnet does not report them). No
+        generic LP transport backend is used. The small master LP optimizes mixture weights only.
 
         ConvexSweep traces the DP and recovers certificates eagerly using
         native potential propagation; traceback can use quadratic memory.
@@ -818,7 +836,8 @@ class DeconvSolver:
         The result includes ``fun`` (rounded network cost), ``upper_bound``
         (continuous objective upper bound), ``lb``, ``gap=upper_bound-lb``,
         ``rounding_error``, ``cost_rounding_error``, ``bound_certified``,
-        ``n_precision_refinements``, ``n_cut_repairs`` and ``polish_improved``.
+        ``n_precision_refinements``, ``n_cut_repairs``, ``n_cuts_transferred``
+        (cuts carried across refinements) and ``polish_improved``.
         A certified success requires a nonnegative gap no larger than ``tol``.
         Bounds use fixed quantized edge costs, rather than claiming exact
         original real cost coefficients; ``cost_rounding_error`` bounds how far
@@ -1002,6 +1021,8 @@ class DeconvSolver:
         cut_b: list[float] = []
         n_repairs = 0
         n_refinements = 0
+        n_transferred = 0
+        transfer = None
         best_f = np.inf
         best_upper = np.inf
         best_error = np.inf
@@ -1032,8 +1053,13 @@ class DeconvSolver:
                 raise ValueError(f"Bounds and mass constraints are infeasible: {feasible.message}")
             x = np.clip(feasible.x[:n], lower, caps)
 
+        # True right after a refinement: the fidelity gate already solved the
+        # refined network at x (= best_x), so the next evaluation reuses it.
+        solved_at_x = False
         for nit in range(1, max_iter + 1):
-            self.set_point(x, with_duals=sweep_duals)
+            if not solved_at_x:
+                self.set_point(x, with_duals=sweep_duals)
+            solved_at_x = False
             if certified:
                 certificate = self._certificate()
                 f = float(certificate["rounded_cost"])
@@ -1043,6 +1069,7 @@ class DeconvSolver:
                 error = certificate["rounding_error"]
                 supply_error = certificate["supply_error"]
                 cost_error = certificate["cost_error"]
+                transfer = _transfer_bounds(certificate)
             else:
                 f = float(self.total_cost())
                 # Legacy backends retain their heuristic search, but its cuts
@@ -1120,7 +1147,8 @@ class DeconvSolver:
                 # scale), the scale being max(|f|, escape price x empirical
                 # mass); otherwise restore the previous network and stop.
                 self.set_point(best_x, with_duals=sweep_duals)
-                refined_cost_error = float(self.graph.dual_cut().get("cost_rounding_error", 0.0))
+                refined_cut = self.graph.dual_cut()
+                refined_cost_error = float(refined_cut.get("cost_rounding_error", 0.0))
                 scale = max(abs(float(self.total_cost())),
                             self._escape_price * float(self.empirical_spectrum.sum_intensities))
                 fidelity = max(gap_tol, best_cost_error, 1e-6 * scale)
@@ -1129,12 +1157,32 @@ class DeconvSolver:
                     status = "precision_limit"
                     break
                 n_refinements += 1
-                # Cost scale can change: discard all previous cuts and bounds.
-                evals_x.clear(); evals_f.clear(); cut_g.clear(); cut_b.clear()
+                # The cost scale can change, so the old cuts bound the old
+                # quantized objective, not the new one.  Real-cost cuts stay
+                # valid as they are.  Quantized ones are carried over with
+                # wnet's transfer bounds, valid at every point:
+                #   Q_new >= (1 - sigma_new) (cut_old - A_old) / (1 + rho_old) - A_new.
+                # Without them every cut is discarded.  Upper bounds are
+                # always discarded; the next oracle call re-evaluates best_x.
+                new_transfer = _transfer_bounds(refined_cut)
+                if self.real_cost_certificate:
+                    n_transferred += len(cut_g)
+                elif transfer is not None and new_transfer is not None:
+                    rho_old, _, a_old = transfer
+                    _, sigma_new, a_new = new_transfer
+                    factor = (1.0 - sigma_new) / (1.0 + rho_old)
+                    cut_g[:] = [factor * g for g in cut_g]
+                    cut_b[:] = [factor * (b - a_old) - a_new for b in cut_b]
+                    n_transferred += len(cut_g)
+                else:
+                    cut_g.clear(); cut_b.clear()
+                transfer = new_transfer
+                evals_x.clear(); evals_f.clear()
                 best_f = best_upper = best_error = np.inf
                 best_supply_error = best_cost_error = np.inf
                 lb = -np.inf
                 x = best_x.copy()
+                solved_at_x = True
                 continue
             if repeated:
                 status = "stalled"
@@ -1155,7 +1203,7 @@ class DeconvSolver:
             rounding_error=best_error, cost_rounding_error=best_cost_error,
             gap_tolerance=gap_tol,
             bound_certified=certified, n_precision_refinements=n_refinements,
-            nit=nit, n_cut_repairs=n_repairs,
+            nit=nit, n_cut_repairs=n_repairs, n_cuts_transferred=n_transferred,
             polish_improved=False,
             success=(certified and status == "converged" and 0 <= gap <= gap_tol),
             status=status,

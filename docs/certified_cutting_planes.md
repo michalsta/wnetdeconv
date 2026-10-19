@@ -51,8 +51,18 @@ objective as a lower bound. `bound_certified=True` identifies this path.
 
 When rounding uncertainty prevents progress, the solver increases intensity
 precision by ten, retaining the graph semantics and simplex variant. It
-reselects a safe cost scale, discards the old basis and every previous cut and
-bound, then starts the model again. Up to eight refinements are allowed within
+reselects a safe cost scale and discards the old basis and every upper bound.
+Previous cuts bound the old quantized objective, so they are carried over
+with wnet's point-independent transfer bounds (`dual_cut()`'s `transfer_*`
+keys: relative round-up rho, relative round-down sigma and absolute coordinate
+error A, with `(1 - sigma) R - A <= Q <= (1 + rho) R + A` against the real-cost
+objective R):
+
+    cut_new(w) = (1 - sigma_new) (cut_old(w) - A_old) / (1 + rho_old) - A_new
+
+Real-cost cuts (`real_cost_certificate`) are kept unchanged. With a wnet that
+does not report the transfer bounds every cut is discarded instead.
+`n_cuts_transferred` counts carried cuts. Up to eight refinements are allowed within
 the `max_iter` evaluation budget. `n_precision_refinements` reports rebuilds;
 `precision_limit`, `stalled`, or `max_iter` do not imply success. The public
 `solver.refine_intensity_precision(factor)` allows explicit precision changes.

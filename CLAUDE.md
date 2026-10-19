@@ -697,6 +697,9 @@ DeconvSolver            builds the WassersteinNetwork; set_point / total_cost /
   cost rounding at the best point (wnet's `cost_rounding_error`) stays within
   `max(tol, previous, 1e-6 x max(|f|, escape price x empirical mass))`;
   otherwise it restores the previous network and stops with `precision_limit`.
+  A kept refinement carries the old cuts over through wnet's `transfer_*`
+  bounds (`docs/certified_cutting_planes.md`); before that every refinement
+  restarted the model and the first point after it landed on a box corner.
   `solver.real_cost_certificate = True` certifies the real-cost problem instead
   (`_certificate()` widens the cut by the cost rounding); it is off by default
   because a real-cost gap of 1e-9 is often below int64 resolution.
