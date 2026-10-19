@@ -740,7 +740,10 @@ class DeconvSolver:
         def cost_and_grad(w):
             self.set_point(w)
             c, g = self.total_cost(), self.gradient()
-            if print_steps: print(f"step {step[0]:3d}  point=[{', '.join(f"{x:8.4f}" for x in w)}]  cost={c:8.4f}  grad=[{', '.join(f"{x:8.4f}" for x in g)}]")
+            if print_steps:
+                pt = ", ".join(f"{x:8.4f}" for x in w)
+                gr = ", ".join(f"{x:8.4f}" for x in g)
+                print(f"step {step[0]:3d}  point=[{pt}]  cost={c:8.4f}  grad=[{gr}]")
             step[0] += 1
             return c, g
 
@@ -1244,6 +1247,7 @@ class ConstrainedSolver(DeconvSolver):
         x0: Optional[np.ndarray] = None,
         bounds: Optional[np.array] = None,
         maxiter: Optional[int] = None,
+        print_steps: bool = False,
     ) -> OptimizeResult:
         """
         Minimize total transport cost subject to the total-mass constraint.
@@ -1255,6 +1259,8 @@ class ConstrainedSolver(DeconvSolver):
             equal weights scaled to satisfy sum_s(w_s * I_s) = I_emp.
         maxiter : int, optional
             SLSQP iteration cap (default 2000).
+        print_steps : bool
+            Prints gradient descent steps for diagnostics purposes.
 
         Returns
         -------
@@ -1277,9 +1283,12 @@ class ConstrainedSolver(DeconvSolver):
             self.set_point(w)
             c = self.total_cost()
             g = self.gradient()
-            print(f"step {step[0]:3d}  point=[{', '.join(f"{x:8.4f}" for x in w)}]  cost={c:8.4f}  grad=[{', '.join(f"{x:8.4f}" for x in g)}]")
+            if print_steps:
+                pt = ", ".join(f"{x:8.4f}" for x in w)
+                gr = ", ".join(f"{x:8.4f}" for x in g)
+                print(f"step {step[0]:3d}  point=[{pt}]  cost={c:8.4f}  grad=[{gr}]")
             step[0] += 1
-            return c, g        
+            return c, g
 
         constraint = {
             "type": "eq",
