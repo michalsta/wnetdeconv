@@ -5,12 +5,29 @@ import numpy as np
 from scipy.optimize import minimize, OptimizeResult
 
 from wnet import Distribution, WassersteinNetwork
+from wnet.wnet_cpp import NetworkSimplex
 from wnet.scaling import WNetDeconvScaler
 
 _Flow = namedtuple("Flow", ["empirical_peak_idx", "theoretical_peak_idx", "flow"])
 from wnet.distances import DistanceMetric
 
 _INDEPENDENT_TRASH_METHOD = "add_independent_asymmetric_trash"
+
+#: Default ``repair_max_nodes`` for NetworkSimplex configs DeconvSolver builds
+#: itself (as in wnetalign).  Warm dual repair stays cheap on small connected
+#: components, but once the matching graph percolates into one giant
+#: component a repair can cost tens of cold solves.  Measured on a 2-D HSQC
+#: grid (74k nodes, 5.8M edges, one component; magnetstein p=2 cap 0.316):
+#: next solve after a 1-5% step 27 s to >9 min with repair, 7-9 s gated; one
+#: cutting-plane run >3 h -> 13 min.  The md=0.1 variant of the same data
+#: (337 components, largest 386 nodes) is unaffected.
+REPAIR_MAX_NODES = 1000
+
+
+def _gate_large_component_repair(solver) -> None:
+    # Only configs the solver builds itself; a caller's config is used as is.
+    if isinstance(solver, NetworkSimplex) and hasattr(solver, "repair_max_nodes"):
+        solver.repair_max_nodes = REPAIR_MAX_NODES
 
 
 def _cut_model_lower_bound(lp, gradients, intercepts, caps, fixed_a=None,
@@ -167,7 +184,10 @@ class DeconvSolver:
         Ignored when ``solver`` is provided.
     solver : NetworkSimplex | SlopeDP | ConvexSweep | CostScaling | CycleCanceling | CapacityScaling, optional
         Solver configuration object.  Takes precedence over ``method``.
-        Defaults to ``SlopeDP()`` for 1D p=1 chains and ``NetworkSimplex()`` otherwise.
+        Defaults to ``SlopeDP()`` for 1D p=1 chains and ``NetworkSimplex()`` otherwise,
+        with ``repair_max_nodes = REPAIR_MAX_NODES``: connected components
+        larger than that restart cold instead of attempting a warm dual
+        repair.  A config passed in is used unchanged.
     force_dense_1d : bool, optional
         In 1D, force the O(m*n) dense factory instead of the O(m+n) chain
         factory (default False = chain in 1D).  Also switches
@@ -376,6 +396,7 @@ class DeconvSolver:
                     f"{list(WassersteinNetwork._SOLVER_METHODS)}"
                 )
             solver = WassersteinNetwork._SOLVER_METHODS[method]()
+            _gate_large_component_repair(solver)
             method = None
         elif solver is not None and method is not None:
             # Documented behaviour: ``method`` is ignored when ``solver`` is
@@ -385,6 +406,7 @@ class DeconvSolver:
         if solver is None:
             solver = (_SlopeDP() if empirical_spectrum.dimension == 1
                       and not force_dense_1d and p == 1 else _NSConfig())
+            _gate_large_component_repair(solver)
         if (
             empirical_spectrum.dimension == 1
             and not force_dense_1d
