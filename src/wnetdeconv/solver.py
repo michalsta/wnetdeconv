@@ -889,6 +889,16 @@ class DeconvSolver:
     #: resolve, so a real-cost certificate would rarely reach ``success``.
     real_cost_certificate: bool = False
 
+    #: Master problem of the cutting-plane loop.  ``"kelley"`` evaluates the
+    #: cut model's minimizer next.  ``"level_l1"`` / ``"level_linf"`` use a
+    #: level bundle step instead: the next point is the one closest (in the
+    #: l1 / l-infinity norm) to the best evaluated point among those whose
+    #: model value is at most ``lb + level_lambda * (upper - lb)``.  The lower
+    #: bound and the stopping test are the Kelley model's either way, so the
+    #: certificate is unchanged; only the sequence of oracle points differs.
+    cutting_plane_master: str = "kelley"
+    level_lambda: float = 0.3
+
     def _certificate(self) -> dict:
         """``dual_cut()`` plus its split into supply and cost error.
 
@@ -1055,6 +1065,10 @@ class DeconvSolver:
             raise ValueError("Gap tolerance must be finite and positive")
         if max_iter < 1:
             raise ValueError("max_iter must be positive")
+        if self.cutting_plane_master not in ("kelley", "level_l1", "level_linf"):
+            raise ValueError(f"Unknown cutting_plane_master {self.cutting_plane_master!r}")
+        if self.cutting_plane_master != "kelley" and not 0.0 < self.level_lambda < 1.0:
+            raise ValueError("level_lambda must lie strictly between 0 and 1")
 
         # A clipped user start can violate the mass constraint. Upper bounds
         # must come from points feasible for the same master problem.
@@ -1144,6 +1158,15 @@ class DeconvSolver:
                 break
             x_next = np.clip(lp.x[:n], lower, caps)
             repeated = any(np.allclose(x_next, xe, rtol=1e-12, atol=1e-14) for xe in evals_x)
+            if self.cutting_plane_master != "kelley" and np.isfinite(best_upper) and not repeated:
+                x_level = self._level_point(
+                    best_x, lb + self.level_lambda * (best_upper - lb), cut_g, cut_b,
+                    fixed_a_ub, fixed_b_ub, lp_a_eq, lp_b_eq, bounds[:n])
+                # A level point that repeats an evaluation adds no cut; keep
+                # the Kelley point then (its refinement/stall logic applies).
+                if x_level is not None and not any(
+                        np.allclose(x_level, xe, rtol=1e-12, atol=1e-14) for xe in evals_x):
+                    x_next = np.clip(x_level, lower, caps)
             if certified and best_error > gap_tol / 4 and (repeated or gap <= 4 * best_error + gap_tol):
                 if n_refinements >= 8:
                     status = "precision_limit"
@@ -1227,6 +1250,39 @@ class DeconvSolver:
             status=status,
             message=f"cutting-plane: {status}, gap={gap:.3g}, certified={certified}, {n_refinements} precision refinement(s)",
         )
+
+    def _level_point(self, center, level, cut_g, cut_b, fixed_a_ub, fixed_b_ub,
+                     lp_a_eq, lp_b_eq, box):
+        """Level-bundle projection: the point nearest ``center`` (l1 or
+        l-infinity, per :attr:`cutting_plane_master`) with every cut at most
+        ``level``, inside the master's box and linear constraints.  None if
+        the LP fails."""
+        from scipy.optimize import linprog
+
+        n = len(center)
+        l1 = self.cutting_plane_master == "level_l1"
+        k = n if l1 else 1                      # distance variables
+        G = np.stack(cut_g)
+        # Variables [x, d]; cuts g x <= level - b.
+        rows = [np.column_stack([G, np.zeros((len(G), k))])]
+        rhs = [level - np.asarray(cut_b)]
+        eye = np.eye(n)
+        dist = eye if l1 else np.ones((n, 1))
+        rows += [np.column_stack([eye, -dist]), np.column_stack([-eye, -dist])]
+        rhs += [center, -center]
+        if fixed_a_ub is not None:
+            rows.append(np.column_stack([fixed_a_ub[:, :n], np.zeros((len(fixed_a_ub), k))]))
+            rhs.append(fixed_b_ub)
+        a_eq = b_eq = None
+        if lp_a_eq is not None:
+            a_eq = np.column_stack([lp_a_eq[:, :n], np.zeros((len(lp_a_eq), k))])
+            b_eq = lp_b_eq
+        res = linprog(np.concatenate([np.zeros(n), np.ones(k)]),
+                      A_ub=np.vstack(rows), b_ub=np.concatenate(rhs), A_eq=a_eq, b_eq=b_eq,
+                      bounds=list(box) + [(0, None)] * k, method="highs",
+                      options={"dual_feasibility_tolerance": 1e-10,
+                               "primal_feasibility_tolerance": 1e-10})
+        return res.x[:n] if res.success else None
 
     def no_subgraphs(self) -> int:
         """
