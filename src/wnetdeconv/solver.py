@@ -38,6 +38,14 @@ REPAIR_MAX_NODES = 1000
 #: previous policy.
 REPAIR_MASS_FRACTION = 0.005
 
+#: The same gate for subgraphs above REPAIR_MAX_NODES.  With wnet solving
+#: independent-trash networks on nonnegative costs (wnet branch
+#: nonneg-ns-costs) cold solves of the giant component are 2x cheaper, which
+#: moves the break-even down: over SNR 2/10/50 a 0.001 gate runs 0.90x the
+#: 0.005 gate (and ties with never repairing), while the small md=0.1 rows
+#: keep their best at REPAIR_MASS_FRACTION.
+REPAIR_LARGE_MASS_FRACTION = 0.001
+
 
 def _gate_large_component_repair(solver, dimension: int) -> None:
     # Only configs the solver builds itself; a caller's config is used as is.
@@ -45,7 +53,7 @@ def _gate_large_component_repair(solver, dimension: int) -> None:
         solver.repair_max_nodes = REPAIR_MAX_NODES
         if dimension > 1 and getattr(_wnet_cpp, "HAS_WARM_MASS_GATE", False):
             solver.warm_violation_mass_fraction = REPAIR_MASS_FRACTION
-            solver.large_repair_mass_fraction = REPAIR_MASS_FRACTION
+            solver.large_repair_mass_fraction = REPAIR_LARGE_MASS_FRACTION
 
 
 def _cut_model_lower_bound(lp, gradients, intercepts, caps, fixed_a=None,
