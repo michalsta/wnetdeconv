@@ -5,6 +5,7 @@ import numpy as np
 from scipy.optimize import minimize, OptimizeResult
 
 from wnet import Distribution, WassersteinNetwork
+from wnet import wnet_cpp as _wnet_cpp
 from wnet.wnet_cpp import NetworkSimplex
 from wnet.scaling import WNetDeconvScaler
 
@@ -23,11 +24,28 @@ _INDEPENDENT_TRASH_METHOD = "add_independent_asymmetric_trash"
 #: (337 components, largest 386 nodes) is unaffected.
 REPAIR_MAX_NODES = 1000
 
+#: Violated-mass repair gate for NetworkSimplex configs DeconvSolver builds
+#: itself on data with more than one dimension.  After the cheap tree patch
+#: fails, a subgraph (of any size) repairs only while the violated basic-arc
+#: mass is at most this fraction of its positive supply, and restarts cold
+#: otherwise.  Repair cost grows with that mass.  Measured on 2-D HSQC
+#: (benzene mixtures, i5-12500, cutting-plane oracle sequences replayed):
+#: repair beats a cold start only below about 0.5% of supply; at 0.005 the
+#: magnetstein p=2 giant component (76k nodes) runs 0.88-1.02x the always-cold
+#: time (0.93x over SNR 2/10/50), md=0.1 deconv (337 small rows) 0.64x of
+#: always-repair.  Always repairing the giant component cost minutes per
+#: solve; work budgets of 0.25-4x lost 1.8x and more.  1-D data keeps the
+#: previous policy.
+REPAIR_MASS_FRACTION = 0.005
 
-def _gate_large_component_repair(solver) -> None:
+
+def _gate_large_component_repair(solver, dimension: int) -> None:
     # Only configs the solver builds itself; a caller's config is used as is.
     if isinstance(solver, NetworkSimplex) and hasattr(solver, "repair_max_nodes"):
         solver.repair_max_nodes = REPAIR_MAX_NODES
+        if dimension > 1 and getattr(_wnet_cpp, "HAS_WARM_MASS_GATE", False):
+            solver.warm_violation_mass_fraction = REPAIR_MASS_FRACTION
+            solver.large_repair_mass_fraction = REPAIR_MASS_FRACTION
 
 
 def _cut_model_lower_bound(lp, gradients, intercepts, caps, fixed_a=None,
@@ -413,7 +431,7 @@ class DeconvSolver:
                     f"{list(WassersteinNetwork._SOLVER_METHODS)}"
                 )
             solver = WassersteinNetwork._SOLVER_METHODS[method]()
-            _gate_large_component_repair(solver)
+            _gate_large_component_repair(solver, empirical_spectrum.dimension)
             method = None
         elif solver is not None and method is not None:
             # Documented behaviour: ``method`` is ignored when ``solver`` is
@@ -423,7 +441,7 @@ class DeconvSolver:
         if solver is None:
             solver = (_SlopeDP() if empirical_spectrum.dimension == 1
                       and not force_dense_1d and p == 1 else _NSConfig())
-            _gate_large_component_repair(solver)
+            _gate_large_component_repair(solver, empirical_spectrum.dimension)
         if (
             empirical_spectrum.dimension == 1
             and not force_dense_1d

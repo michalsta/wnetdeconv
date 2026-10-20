@@ -703,6 +703,13 @@ DeconvSolver            builds the WassersteinNetwork; set_point / total_cost /
   `solver.real_cost_certificate = True` certifies the real-cost problem instead
   (`_certificate()` widens the cut by the cost rounding); it is off by default
   because a real-cost gap of 1e-9 is often below int64 resolution.
+- **2-D NetworkSimplex repair is gated on violated mass.** Configs DeconvSolver
+  builds itself on dims > 1 get `warm_violation_mass_fraction` and
+  `large_repair_mass_fraction` = `REPAIR_MASS_FRACTION` (0.005): repair only
+  while the violated basic-arc mass after the tree patch is at most 0.5% of
+  supply, else cold. Count limits, step-size rules and repair work budgets
+  were measured and lose (see the constant's comment). Needs wnet with
+  `HAS_WARM_MASS_GATE`; otherwise inert.
 - **The 1-D cold-restart policy keys on a common lattice, not grid identity.**
   `_all_spectra_on_common_lattice()`: every spectrum uniformly spaced with one
   common step, any offset. Equal gaps make the chain degenerate and dual repair
