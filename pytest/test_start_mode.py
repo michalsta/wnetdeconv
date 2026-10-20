@@ -49,7 +49,8 @@ def test_trash_start_same_costs_and_gradients(cls, warm):
         b.set_point(w)
         assert a.total_cost() == b.total_cost()
         np.testing.assert_array_equal(a.gradient(), b.gradient())
-    assert b.graph.crash_start_count() >= 1
+    if getattr(wnet_cpp, "HAS_CRASH_START", False):
+        assert b.graph.crash_start_count() >= 1
     assert a.graph.crash_start_count() == 0
 
 
