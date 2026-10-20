@@ -455,6 +455,8 @@ class DeconvSolver:
             cfg.warm = solver.warm
             if hasattr(cfg, "repair_max_nodes"):
                 cfg.repair_max_nodes = solver.repair_max_nodes
+            if hasattr(cfg, "start"):
+                cfg.start = solver.start
             cfg.warm_violation_limit = 0
             solver = cfg
 
