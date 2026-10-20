@@ -74,3 +74,9 @@ def test_lattice_policy_keeps_start_mode():
                      theoretical_trash_cost=0.05, solver=config(StartMode.Trash, WarmMode.DualRatio))
     assert s.graph._solver.start == StartMode.Trash
     assert s.graph._solver.warm_violation_limit == 0
+
+
+def test_default_config_uses_trash_start():
+    emp, theos = grid_spectra()
+    s = MagnetsteinSolver(emp, theos, DistanceMetric.L1, MTD=0.05, MTD_th=0.05)
+    assert s.graph._solver.start == StartMode.Trash

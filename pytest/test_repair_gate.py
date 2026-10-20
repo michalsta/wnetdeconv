@@ -47,6 +47,7 @@ def test_method_string_config_is_gated():
 
 def test_caller_config_is_kept():
     cfg = NetworkSimplex()
+    cfg.repair_max_nodes = -1
     assert make(solver=cfg).graph._solver.repair_max_nodes == -1
     cfg.repair_max_nodes = 123
     assert make(solver=cfg).graph._solver.repair_max_nodes == 123
