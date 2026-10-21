@@ -38,12 +38,13 @@ REPAIR_MAX_NODES = 1000
 #: previous policy.
 REPAIR_MASS_FRACTION = 0.005
 
-#: The same gate for subgraphs above REPAIR_MAX_NODES.  With wnet solving
-#: independent-trash networks on nonnegative costs (wnet branch
-#: nonneg-ns-costs) cold solves of the giant component are 2x cheaper, which
-#: moves the break-even down: over SNR 2/10/50 a 0.001 gate runs 0.90x the
-#: 0.005 gate (and ties with never repairing), while the small md=0.1 rows
-#: keep their best at REPAIR_MASS_FRACTION.
+#: The same gate for subgraphs above REPAIR_MAX_NODES.  Measured 2026-10-21
+#: against wnet's trash crash start (i5-12500, benzene 2-D HSQC noise
+#: mixtures, cutting-plane runs, serial, two repetitions): on the magnetstein
+#: p=2 giant component (76k nodes) a 0.001 gate runs 1.00/0.93/0.97x the
+#: 0.005 gate at SNR 2/10/50 and ties with never repairing (-1); the md=0.1
+#: deconv rows (337 small subgraphs) do not reach this gate, so the value
+#: does not affect them.
 REPAIR_LARGE_MASS_FRACTION = 0.001
 
 
