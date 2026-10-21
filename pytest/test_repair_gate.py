@@ -71,7 +71,7 @@ def test_gated_results_match_cold_solves():
 # --------------------------------------------------------------------------
 from wnet import wnet_cpp
 from wnetdeconv import Spectrum_1D
-from wnetdeconv.solver import REPAIR_MASS_FRACTION
+from wnetdeconv.solver import REPAIR_MASS_FRACTION, REPAIR_LARGE_MASS_FRACTION
 
 needs_gate = pytest.mark.skipif(not getattr(wnet_cpp, "HAS_WARM_MASS_GATE", False),
                                 reason="wnet/pylmcf without the violated-mass gate")
@@ -93,7 +93,7 @@ def test_default_2d_config_gets_the_mass_gate():
     for cfg in (make().graph._solver, make(DeconvSolver).graph._solver,
                 make(DeconvSolver, method="network_simplex").graph._solver):
         assert cfg.warm_violation_mass_fraction == REPAIR_MASS_FRACTION
-        assert cfg.large_repair_mass_fraction == REPAIR_MASS_FRACTION
+        assert cfg.large_repair_mass_fraction == REPAIR_LARGE_MASS_FRACTION
         assert cfg.repair_max_nodes == REPAIR_MAX_NODES
 
 

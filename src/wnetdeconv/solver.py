@@ -38,6 +38,15 @@ REPAIR_MAX_NODES = 1000
 #: previous policy.
 REPAIR_MASS_FRACTION = 0.005
 
+#: The same gate for subgraphs above REPAIR_MAX_NODES.  Measured 2026-10-21
+#: against wnet's trash crash start (i5-12500, benzene 2-D HSQC noise
+#: mixtures, cutting-plane runs, serial, two repetitions): on the magnetstein
+#: p=2 giant component (76k nodes) a 0.001 gate runs 1.00/0.93/0.97x the
+#: 0.005 gate at SNR 2/10/50 and ties with never repairing (-1); the md=0.1
+#: deconv rows (337 small subgraphs) do not reach this gate, so the value
+#: does not affect them.
+REPAIR_LARGE_MASS_FRACTION = 0.001
+
 
 def _gate_large_component_repair(solver, dimension: int) -> None:
     # Only configs the solver builds itself; a caller's config is used as is.
@@ -45,7 +54,7 @@ def _gate_large_component_repair(solver, dimension: int) -> None:
         solver.repair_max_nodes = REPAIR_MAX_NODES
         if dimension > 1 and getattr(_wnet_cpp, "HAS_WARM_MASS_GATE", False):
             solver.warm_violation_mass_fraction = REPAIR_MASS_FRACTION
-            solver.large_repair_mass_fraction = REPAIR_MASS_FRACTION
+            solver.large_repair_mass_fraction = REPAIR_LARGE_MASS_FRACTION
 
 
 def _cut_model_lower_bound(lp, gradients, intercepts, caps, fixed_a=None,
