@@ -1085,7 +1085,7 @@ class DeconvSolver:
         (g._wnet_obj, g._intensity_scale_arg, g._cost_scaling_arg,
          self.sf_intensity, self.scale_factor, self._ftol, self.point) = state
         if g._wnet_obj is current and current.intensity_scale_factor() != self.sf_intensity:
-            # The refinement happened in place (wnet >= 1.6: rescale_intensity),
+            # The refinement happened in place (a wnet with rescale_intensity),
             # so there is no old network object to fall back to; re-quantise
             # back at the previous intensity and cost scales instead.  The
             # solution is discarded either way, like the old object swap

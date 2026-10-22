@@ -22,7 +22,7 @@ Supports 1-D spectra (NMR chemical shift, m/z) and higher-dimensional data
 pip install wnetdeconv
 ```
 
-Dependencies: `pylmcf`, `wnet`, `numpy`, `scipy`.
+Dependencies: `pylmcf`, `wnet`, `numpy`, `scipy`, `highspy` (the cutting-plane master LP is kept as a persistent HiGHS model; without it the loop falls back to `scipy.optimize.linprog`, about 10x slower per iteration).
 Optional: `pyopenms` for loading featureXML files.
 
 ## Concepts
