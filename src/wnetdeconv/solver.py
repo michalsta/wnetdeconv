@@ -1081,14 +1081,25 @@ class DeconvSolver:
 
     def _restore_precision_state(self, state) -> None:
         g = self.graph
+        current = g._wnet_obj
         (g._wnet_obj, g._intensity_scale_arg, g._cost_scaling_arg,
          self.sf_intensity, self.scale_factor, self._ftol, self.point) = state
+        if g._wnet_obj is current and current.intensity_scale_factor() != self.sf_intensity:
+            # The refinement happened in place (wnet >= 1.6: rescale_intensity),
+            # so there is no old network object to fall back to; re-quantise
+            # back at the previous intensity and cost scales instead.  The
+            # solution is discarded either way, like the old object swap
+            # discarded the fine one.
+            cost_scale = g._cost_scaling_arg if g._cost_scaling_arg else 0
+            current.rescale_intensity(self.sf_intensity, int(cost_scale))
 
     def refine_intensity_precision(self, factor: float = 10.0) -> None:
-        """Rebuild the same network at finer supply precision with safe cost scaling.
+        """Move the same network to finer supply precision with safe cost scaling.
 
-        Topology/trash semantics and solver variant stay unchanged. A rebuild
-        invalidates the old basis and cuts because quantized costs may change.
+        Topology/trash semantics and solver variant stay unchanged; with a wnet
+        that supports it the network is re-quantised in place rather than
+        rebuilt.  Either way the old basis and cuts are invalidated because
+        quantized costs may change.
         """
         if not np.isfinite(factor) or factor <= 1:
             raise ValueError("Precision factor must be finite and greater than one")
