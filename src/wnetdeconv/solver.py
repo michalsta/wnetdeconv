@@ -1046,13 +1046,20 @@ class DeconvSolver:
     real_cost_certificate: bool = False
 
     #: Master problem of the cutting-plane loop.  ``"kelley"`` evaluates the
-    #: cut model's minimizer next.  ``"level_l1"`` / ``"level_linf"`` use a
-    #: level bundle step instead: the next point is the one closest (in the
-    #: l1 / l-infinity norm) to the best evaluated point among those whose
-    #: model value is at most ``lb + level_lambda * (upper - lb)``.  The lower
-    #: bound and the stopping test are the Kelley model's either way, so the
-    #: certificate is unchanged; only the sequence of oracle points differs.
-    cutting_plane_master: str = "kelley"
+    #: cut model's minimizer next.  ``"in_out"`` (the default) uses in-out
+    #: (Wentges) stabilisation: the next point is
+    #: ``in_out_alpha * best + (1 - in_out_alpha) * kelley``, between the best
+    #: evaluated point and the model minimizer, except right after a misprice
+    #: (the last cut did not raise the model at the previous Kelley point),
+    #: when the Kelley point itself is evaluated.  It needs no extra LP.
+    #: ``"level_l1"`` / ``"level_linf"`` use a level bundle step: the next
+    #: point is the one closest (in the l1 / l-infinity norm) to the best
+    #: evaluated point among those whose model value is at most
+    #: ``lb + level_lambda * (upper - lb)``.  The lower bound and the stopping
+    #: test are the Kelley model's in every case, so the certificate is
+    #: unchanged; only the sequence of oracle points differs.
+    cutting_plane_master: str = "in_out"
+    in_out_alpha: float = 0.5
     level_lambda: float = 0.3
 
     def _certificate(self) -> dict:
@@ -1231,10 +1238,15 @@ class DeconvSolver:
             raise ValueError("Gap tolerance must be finite and positive")
         if max_iter < 1:
             raise ValueError("max_iter must be positive")
-        if self.cutting_plane_master not in ("kelley", "level_l1", "level_linf"):
+        if self.cutting_plane_master not in ("kelley", "in_out", "level_l1", "level_linf"):
             raise ValueError(f"Unknown cutting_plane_master {self.cutting_plane_master!r}")
-        if self.cutting_plane_master != "kelley" and not 0.0 < self.level_lambda < 1.0:
+        level_master = self.cutting_plane_master in ("level_l1", "level_linf")
+        if level_master and not 0.0 < self.level_lambda < 1.0:
             raise ValueError("level_lambda must lie strictly between 0 and 1")
+        if self.cutting_plane_master == "in_out" and not 0.0 <= self.in_out_alpha < 1.0:
+            raise ValueError("in_out_alpha must lie in [0, 1)")
+        # In-out master: the previous Kelley point and its model value.
+        in_out_prev = None
 
         # A clipped user start can violate the mass constraint. Upper bounds
         # must come from points feasible for the same master problem.
@@ -1323,10 +1335,22 @@ class DeconvSolver:
             repeated = bool(np.any(np.all(
                 np.abs(xs_seen - x_next) <= 1e-14 + 1e-12 * np.abs(xs_seen), axis=1)))
             if self.cutting_plane_master != "kelley" and np.isfinite(best_upper) and not repeated:
-                x_level = self._level_point(
-                    best_x, lb + self.level_lambda * (best_upper - lb), cut_g, cut_b,
-                    fixed_a_ub, fixed_b_ub, lp_a_eq, lp_b_eq, bounds[:n])
-                # A level point that repeats an evaluation adds no cut; keep
+                if level_master:
+                    x_level = self._level_point(
+                        best_x, lb + self.level_lambda * (best_upper - lb), cut_g, cut_b,
+                        fixed_a_ub, fixed_b_ub, lp_a_eq, lp_b_eq, bounds[:n])
+                else:
+                    # In-out: a convex combination of two feasible points is
+                    # feasible.  After a misprice take the Kelley point, so the
+                    # model is tightened where its minimizer sits.
+                    alpha = self.in_out_alpha
+                    if in_out_prev is not None:
+                        x_prev, m_prev = in_out_prev
+                        if g @ x_prev + cut_b[-1] <= m_prev + 1e-12 * max(1.0, abs(m_prev)):
+                            alpha = 0.0
+                    in_out_prev = (x_next, lb)
+                    x_level = alpha * best_x + (1.0 - alpha) * x_next
+                # A point that repeats an evaluation adds no cut; keep
                 # the Kelley point then (its refinement/stall logic applies).
                 if x_level is not None and not np.any(np.all(
                         np.abs(xs_seen - x_level) <= 1e-14 + 1e-12 * np.abs(xs_seen), axis=1)):
@@ -1389,6 +1413,7 @@ class DeconvSolver:
                     master.set_cuts(cut_g, cut_b)
                 transfer = new_transfer
                 evals_x.clear(); evals_f.clear()
+                in_out_prev = None
                 best_f = best_upper = best_error = np.inf
                 best_supply_error = best_cost_error = np.inf
                 lb = -np.inf
