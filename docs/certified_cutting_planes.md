@@ -27,6 +27,17 @@ Node potentials provide one common matching dual; it produces supporting cuts
 for continuous supplies with the graph's fixed quantized cost coefficients.
 For the construction and supply-error proof, see wnet's `docs/dual_cuts.md`.
 
+Which point is evaluated next is set by `solver.cutting_plane_master`. The
+default, `"in_out"`, evaluates `in_out_alpha * best + (1 - in_out_alpha) *
+kelley` (alpha 0.5): halfway between the best evaluated point and the master
+LP's minimizer, or the minimizer itself right after a cut fails to raise the
+model there. `"kelley"` always evaluates the minimizer; `"level_l1"` /
+`"level_linf"` take a level-bundle projection (one extra LP per iteration).
+The lower bound and stopping test are the same under every master. On the
+prod_bench deconvolution jobs in-out took 0.78x Kelley's time (geometric
+mean, x86-64-v3; 0.79x on AVX-512), up to 4x less where Kelley ran into its
+iteration cap, and at most 1.25x more on any job.
+
 For 1D `p > 1`, explicitly pass `solver=ConvexSweep()` and the desired `p`.
 ConvexSweep supplies a common feasible dual through templated DP traceback
 and native potential recovery. Cutting planes automatically request
