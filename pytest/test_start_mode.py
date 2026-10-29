@@ -1,4 +1,5 @@
-"""NetworkSimplex StartMode.Trash (crash start from the all-trash flow) through DeconvSolver.
+"""NetworkSimplex crash starts (StartMode.Trash: the all-trash flow; StartMode.Greedy, the default:
+the all-trash flow improved by a greedy matching) through DeconvSolver.
 
 The start mode must not change any answer: set_point costs, gradients and the
 cutting-plane optimum agree with the artificial start, for every warm mode
@@ -15,6 +16,8 @@ wnet_cpp = pytest.importorskip("wnet.wnet_cpp")
 if not hasattr(wnet_cpp, "StartMode"):
     pytest.skip("wnet without StartMode", allow_module_level=True)
 StartMode = wnet_cpp.StartMode
+# wnet releases before StartMode.Greedy default to Trash
+CRASH_STARTS = ["Trash"] + (["Greedy"] if hasattr(StartMode, "Greedy") else [])
 
 
 def grid_spectra(n=16, seed=0):
@@ -34,14 +37,15 @@ def config(start, warm):
     return cfg
 
 
+@pytest.mark.parametrize("start", CRASH_STARTS)
 @pytest.mark.parametrize("warm", [WarmMode.NONE, WarmMode.Dual, WarmMode.DualRatio])
 @pytest.mark.parametrize("cls", [DeconvSolver, MagnetsteinSolver])
-def test_trash_start_same_costs_and_gradients(cls, warm):
+def test_crash_start_same_costs_and_gradients(cls, warm, start):
     emp, theos = grid_spectra()
     kw = (dict(MTD=0.05, MTD_th=0.05) if cls is MagnetsteinSolver
           else dict(max_distance=0.1, experimental_trash_cost=0.05, theoretical_trash_cost=0.05))
     a = cls(emp, theos, DistanceMetric.L1, solver=config(StartMode.Artificial, warm), **kw)
-    b = cls(emp, theos, DistanceMetric.L1, solver=config(StartMode.Trash, warm), **kw)
+    b = cls(emp, theos, DistanceMetric.L1, solver=config(getattr(StartMode, start), warm), **kw)
     rng = np.random.default_rng(4)
     for _ in range(6):
         w = rng.uniform(0.1, 1.0, 2)
@@ -54,11 +58,12 @@ def test_trash_start_same_costs_and_gradients(cls, warm):
     assert a.graph.crash_start_count() == 0
 
 
-def test_trash_start_same_optimum():
+@pytest.mark.parametrize("start", CRASH_STARTS)
+def test_crash_start_same_optimum(start):
     emp, theos = grid_spectra(seed=3)
     kw = dict(MTD=0.05, MTD_th=0.05)
     a = MagnetsteinSolver(emp, theos, DistanceMetric.L1, solver=config(StartMode.Artificial, WarmMode.DualRatio), **kw)
-    b = MagnetsteinSolver(emp, theos, DistanceMetric.L1, solver=config(StartMode.Trash, WarmMode.DualRatio), **kw)
+    b = MagnetsteinSolver(emp, theos, DistanceMetric.L1, solver=config(getattr(StartMode, start), WarmMode.DualRatio), **kw)
     ra, rb = a.optimize(), b.optimize()
     assert rb.fun == pytest.approx(ra.fun, rel=1e-9, abs=1e-12)
     np.testing.assert_allclose(rb.x, ra.x, atol=1e-6)
@@ -77,7 +82,7 @@ def test_lattice_policy_keeps_start_mode():
     assert s.graph._solver.warm_violation_limit == 0
 
 
-def test_default_config_uses_trash_start():
+def test_default_config_uses_crash_start():
     emp, theos = grid_spectra()
     s = MagnetsteinSolver(emp, theos, DistanceMetric.L1, MTD=0.05, MTD_th=0.05)
-    assert s.graph._solver.start == StartMode.Trash
+    assert s.graph._solver.start == getattr(StartMode, CRASH_STARTS[-1])
