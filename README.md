@@ -185,14 +185,14 @@ From `wnet.distances.DistanceMetric`:
 
 `wnetdeconv.grid.grid_to_spectrum` reduces a processed 2D grid to a
 `Spectrum`: exclusion of solvent/standard boxes, baseline removal (global
-median or row/column medians), a noise threshold in units of the robust MAD
-noise level, optional binning, optional peak segmentation (each peak becomes
+median or row/column medians), light Gaussian smoothing, a noise threshold in
+units of the robust MAD noise level, optional binning, optional peak segmentation (each peak becomes
 one point at its intensity centroid carrying its volume) and per-axis scaling.
 
 ```python
 from wnetdeconv.grid import grid_to_spectrum
 
-mix = grid_to_spectrum(image, [c13_ppm, h1_ppm], noise_threshold=5,
+mix = grid_to_spectrum(image, [c13_ppm, h1_ppm], smooth=0.7, noise_threshold=4,
                        exclude=[((36, 43), (2.35, 2.65))],   # DMSO
                        axis_scale=(20, 1))                   # 20 ppm 13C ~ 1 ppm 1H
 ```

@@ -7,7 +7,8 @@ best on the public 2D benchmarks with known composition:
 
 1. optional exclusion of solvent / standard regions,
 2. baseline removal (global median, or row/column medians against t1 ridges),
-3. a noise threshold in units of the robust (MAD) noise level,
+3. optional Gaussian smoothing, then a noise threshold in units of the
+   robust (MAD) noise level of the (smoothed) image,
 4. optional block binning,
 5. optional peak segmentation: every positive pixel is assigned to the local
    maximum its steepest ascent reaches, and each peak becomes one point at its
@@ -100,8 +101,9 @@ def grid_to_spectrum(
     image: np.ndarray,
     axes: Sequence[np.ndarray],
     *,
-    baseline: Optional[str] = "rowcol",
-    noise_threshold: Optional[float] = 5.0,
+    baseline: Optional[str] = "median",
+    smooth: float = 0.7,
+    noise_threshold: Optional[float] = 4.0,
     relative_threshold: Optional[float] = None,
     binning: Tuple[int, int] = (1, 1),
     peaks: bool = True,
@@ -120,10 +122,15 @@ def grid_to_spectrum(
         Coordinates (e.g. ppm) of the rows and columns.
     baseline : {"rowcol", "median", None}
         Baseline removal, see :func:`remove_baseline`.
+    smooth : float
+        Gaussian smoothing width in pixels, applied before thresholding (0
+        disables).  Smoothing removes isolated noise maxima, which lets the
+        threshold sit lower and keeps weak peaks.
     noise_threshold : float or None
         Zero every pixel at or below ``noise_threshold`` times the MAD noise
-        level of the baseline-corrected image.  5 was the best setting on
-        HSQC; lower values let noise peaks in, higher ones cut weak
+        level of the baseline-corrected (smoothed) image.  With
+        ``smooth=0.7``, 4 was the best setting on HSQC (5 without
+        smoothing); lower values let noise peaks in, higher ones cut weak
         compounds.
     relative_threshold : float or None
         Additionally zero pixels at or below this fraction of the maximum.
@@ -156,6 +163,10 @@ def grid_to_spectrum(
             bad |= (g0 >= lo0) & (g0 <= hi0) & (g1 >= lo1) & (g1 <= hi1)
         image[bad] = np.median(image)
     image = remove_baseline(image, baseline)
+    if smooth:
+        from scipy import ndimage
+
+        image = ndimage.gaussian_filter(image, smooth)
     t = 0.0
     if noise_threshold:
         t = max(t, noise_threshold * noise_sigma(image))

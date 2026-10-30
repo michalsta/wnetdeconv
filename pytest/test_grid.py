@@ -59,7 +59,7 @@ def test_grid_to_spectrum_recovers_proportions(peaks):
 
 def test_grid_to_spectrum_peaks_conserve_mass():
     img = COMP_A.copy()
-    s = grid_to_spectrum(img, AXES, baseline=None, noise_threshold=None, relative_threshold=1e-3)
+    s = grid_to_spectrum(img, AXES, baseline=None, smooth=0, noise_threshold=None, relative_threshold=1e-3)
     kept = img[img > 1e-3 * img.max()].sum()
     assert s.sum_intensities == pytest.approx(kept)
     assert s.positions.shape[1] == 2  # two peaks
@@ -81,3 +81,11 @@ def test_axis_scale_divides_coordinates():
 def test_rejects_shape_mismatch():
     with pytest.raises(ValueError):
         grid_to_spectrum(np.zeros((3, 4)), [np.arange(4), np.arange(3)])
+
+
+def test_smoothing_suppresses_isolated_noise_peaks():
+    rng = np.random.default_rng(5)
+    img = COMP_A + rng.normal(0, 0.01, COMP_A.shape)
+    raw = grid_to_spectrum(img, AXES, smooth=0, noise_threshold=3)
+    smoothed = grid_to_spectrum(img, AXES, smooth=0.7, noise_threshold=3)
+    assert smoothed.positions.shape[1] < raw.positions.shape[1]
