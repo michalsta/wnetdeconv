@@ -172,6 +172,16 @@ class _MasterLP:
         h.run()
         status = h.getModelStatus()
         if status != _highspy.HighsModelStatus.kOptimal:
+            # A warm-started HiGHS occasionally ends in status "Unknown" on
+            # large cut models (seen with ~500 components); a cold restart and
+            # then scipy's linprog usually still solve the same LP.
+            h.clearSolver()
+            h.run()
+            status = h.getModelStatus()
+        if status != _highspy.HighsModelStatus.kOptimal:
+            fallback = self._solve_linprog()
+            if fallback.success:
+                return fallback
             return _LPResult(None, np.nan, False, h.modelStatusToString(status), None, None)
         sol = h.getSolution()
         x = np.asarray(sol.col_value, dtype=float)

@@ -67,3 +67,21 @@ def test_master_lp_reports_failure_without_crash():
     lp.add_cut(np.zeros(n), 0.0)
     r = lp.solve()
     assert not r.success and isinstance(r.message, str)
+
+
+@pytest.mark.skipif(solver_module._highspy is None, reason="highspy not installed")
+def test_failed_highs_run_falls_back(monkeypatch):
+    """A non-optimal HiGHS status is retried cold, then solved by linprog."""
+    rng = np.random.default_rng(3)
+    n, k = 5, 12
+    g, b, caps, lower, a_eq, b_eq, fixed_a, fixed_b = _random_problem(rng, n, k, True, False)
+    lp = _MasterLP(n, lower, caps, a_eq, b_eq, fixed_a, fixed_b)
+    ref = _MasterLP(n, lower, caps, a_eq, b_eq, fixed_a, fixed_b)
+    ref._h = None
+    for i in range(k):
+        lp.add_cut(g[i], b[i]); ref.add_cut(g[i], b[i])
+    unknown = solver_module._highspy.HighsModelStatus.kUnknown
+    monkeypatch.setattr(lp._h, "getModelStatus", lambda: unknown)
+    r = lp.solve()
+    assert r.success
+    assert r.fun == pytest.approx(ref.solve().fun, abs=1e-8)
